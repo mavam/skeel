@@ -13,4 +13,4 @@ skeel update
 skeel update --dry-run
 ```
 
-The human output marks updated skills with `✔`, skills that were already current with `•`, and installed skills that were left unchanged with `→`. When GitHub provenance is available, update output also shows version changes such as `main@oldsha → main@newsha`.
+The human output marks updated skills with `✔`, skills that were already current with `•`, and installed skills that were left unchanged with `◦`. When GitHub provenance is available, update output also shows version changes such as `main@oldsha → main@newsha`.

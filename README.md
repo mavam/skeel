@@ -118,7 +118,7 @@ marker as the status:
   the local version before and after the update, such as `main@oldsha →
   main@newsha`.
 - `•` checked the skill and it is already current.
-- `→` skipped the skill. The skill is installed and available locally, but was
+- `◦` skipped the skill. The skill is installed and available locally, but was
   not updated. This usually means the installed `SKILL.md` has no GitHub
   metadata or the skill is not represented by an updatable manifest entry.
 

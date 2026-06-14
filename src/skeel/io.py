@@ -70,7 +70,7 @@ def status_marker(status: str | None) -> StatusMarker | None:
         case "current":
             return "•", "bright_black"
         case "skipped":
-            return "→", "yellow"
+            return "◦", "yellow"
         case _:
             return None
 
