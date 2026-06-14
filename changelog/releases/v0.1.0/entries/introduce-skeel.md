@@ -25,9 +25,9 @@ Quickstart:
      - universal
      - claude-code
    sources:
-     - source: mavam/skills
+     - source: tenzir/skills
        skills:
-         - mavam
+         - tenzir-docs
      - source: openclaw/gogcli
        allow_hidden_dirs: true
        skills:

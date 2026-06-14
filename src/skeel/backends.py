@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import os
+import json
 import shlex
 import subprocess
 from dataclasses import dataclass
@@ -18,17 +18,23 @@ class InstallStep:
     command: Command
 
 
+@dataclass(frozen=True)
+class BackendOptions:
+    agent: str | None = None
+    scope: str = "project"
+    directory: Path | None = None
+
+
 class Backend(Protocol):
     name: str
 
     def install_steps(
         self,
-        manifest: Manifest,
         source: SourceSpec,
-        skill: SkillSpec,
+        options: BackendOptions,
     ) -> list[InstallStep]: ...
 
-    def update_steps(self, manifest: Manifest) -> list[InstallStep]: ...
+    def update_steps(self) -> list[InstallStep]: ...
 
 
 def quote_command(command: Command) -> str:
@@ -59,33 +65,36 @@ class GhSkillBackend:
 
     def install_steps(
         self,
-        manifest: Manifest,
         source: SourceSpec,
-        skill: SkillSpec,
+        options: BackendOptions,
     ) -> list[InstallStep]:
         if not source.source:
             raise ValueError("gh backend sources must define source")
-        command = [
-            "gh",
-            "skill",
-            "install",
-            source.source,
-            skill.spec,
-            "--dir",
-            str(manifest.shared_dir),
-            "--force",
-        ]
-        if source.allow_hidden_dirs:
-            command.append("--allow-hidden-dirs")
-        if skill.pin:
-            command.extend(["--pin", skill.pin])
-        return [InstallStep(label=f"{source.source}/{skill.spec}", command=command)]
 
-    def update_steps(self, manifest: Manifest) -> list[InstallStep]:
+        steps: list[InstallStep] = []
+        skills: tuple[SkillSpec | None, ...] = (None,) if source.install_all else source.skills
+        for skill in skills:
+            command = ["gh", "skill", "install", source.source]
+            label = f"{source.source}/*"
+            pin = source.pin
+            if skill:
+                command.append(skill.spec)
+                label = f"{source.source}/{skill.spec}"
+                pin = skill.pin
+            else:
+                command.append("--all")
+            command.extend(target_args(options))
+            command.append("--force")
+            if pin:
+                command.extend(["--pin", pin])
+            steps.append(InstallStep(label=f"{label} ({target_label(options)})", command=command))
+        return steps
+
+    def update_steps(self) -> list[InstallStep]:
         return [
             InstallStep(
                 label="gh skill update",
-                command=["gh", "skill", "update", "--all", "--dir", str(manifest.shared_dir)],
+                command=["gh", "skill", "update", "--all"],
             )
         ]
 
@@ -104,36 +113,75 @@ def get_backend(name: str) -> Backend:
         raise ValueError(message) from error
 
 
-def symlink_step(manifest: Manifest, skill: SkillSpec) -> InstallStep | None:
-    if "claude-code" not in manifest.agents:
-        return None
-    source = manifest.shared_dir / skill.name
-    target = manifest.claude_dir / skill.name
-    rel = os.path.relpath(source, start=target.parent)
-    return InstallStep(
-        label=f"link claude-code/{skill.name}",
-        command=["ln", "-sfn", rel, str(target)],
+def project_root() -> Path:
+    result = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        check=False,
+        capture_output=True,
+        text=True,
     )
+    if result.returncode:
+        return Path.cwd()
+    return Path(result.stdout.strip())
 
 
-def ensure_claude_symlink(manifest: Manifest, skill: SkillSpec) -> None:
-    if "claude-code" not in manifest.agents:
-        return
-    source = manifest.shared_dir / skill.name
-    target = manifest.claude_dir / skill.name
-    if not source.exists():
-        raise SystemExit(f"cannot link missing skill: {source}")
-    target.parent.mkdir(parents=True, exist_ok=True)
-    rel = os.path.relpath(source, start=target.parent)
-    if target.is_symlink() or target.exists():
-        if target.is_dir() and not target.is_symlink():
-            subprocess.run(["rm", "-rf", str(target)], check=True)
-        else:
-            target.unlink()
-    target.symlink_to(rel, target_is_directory=True)
+def universal_skills_dir(scope: str) -> Path:
+    if scope == "user":
+        return Path.home() / ".agents" / "skills"
+    return project_root() / ".agents" / "skills"
 
 
-def installed_skill_names(path: Path) -> set[str]:
-    if not path.exists():
+def target_directory(options: BackendOptions) -> Path | None:
+    if options.directory:
+        return options.directory
+    if options.agent is None:
+        return universal_skills_dir(options.scope)
+    return None
+
+
+def target_args(options: BackendOptions) -> list[str]:
+    directory = target_directory(options)
+    if directory:
+        return ["--dir", str(directory)]
+    if not options.agent:
+        raise ValueError("backend options must define an agent or directory")
+    return ["--agent", options.agent, "--scope", options.scope]
+
+
+def target_label(options: BackendOptions) -> str:
+    directory = target_directory(options)
+    if directory:
+        return str(directory)
+    return f"{options.agent}/{options.scope}"
+
+
+def installed_skill_names(options: BackendOptions) -> set[str]:
+    directory = target_directory(options)
+    if directory and not directory.exists():
         return set()
-    return {item.name for item in path.iterdir() if item.is_dir() and (item / "SKILL.md").exists()}
+
+    names: set[str] = set()
+    command = [
+        "gh",
+        "skill",
+        "list",
+        "--json",
+        "skillName",
+    ]
+    command.extend(target_args(options))
+    result = subprocess.run(command, check=False, capture_output=True, text=True)
+    if result.returncode:
+        message = result.stderr.strip() or result.stdout.strip() or "gh skill list failed"
+        raise RuntimeError(message)
+    entries = json.loads(result.stdout or "[]")
+    if not isinstance(entries, list):
+        raise RuntimeError("gh skill list returned invalid JSON")
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("skillName"), str):
+            raise RuntimeError("gh skill list returned invalid skill entries")
+        names.add(entry["skillName"])
+    return names
+
+
+def desired_skill_names(manifest: Manifest) -> set[str]:
+    return manifest.desired_skill_names

@@ -1,17 +1,14 @@
-version: 1
-shared_dir: ~/.agents/skills
-agents:
-  - universal
-  - claude-code
 sources:
-  - source: mavam/skills
-    skills:
-      - mavam
-  - source: openclaw/gogcli
-    allow_hidden_dirs: true
+  - tenzir/skills@tenzir-docs
+  - github: openclaw/gogcli
     skills:
       - gog
-  - source: anthropics/skills
+  - github: tenzir/skills
     skills:
-      - frontend-design
-      - skill-creator
+      - tenzir-ocsf
+      - tenzir-ecs
+  - skills:
+      - clacks
+    install:
+      - uvx --from slack-clacks clacks skill --mode universal
+      - uvx --from slack-clacks clacks skill --mode claude

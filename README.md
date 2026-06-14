@@ -8,13 +8,12 @@ The first backend is `gh skill` from GitHub CLI.
 
 ## ✨ Features
 
-- **Desired state**: declare skills, sources, shared install directory, and
-  target agents in one YAML file
+- **Desired state**: declare skill sources in one YAML file
 - **Plan and diff**: preview commands and compare managed skills against what's
   installed locally
 - **Apply and update**: install missing skills and update gh-managed skills
-- **Agent links**: installs once into a shared directory and links skills into
-  agent-specific locations such as Claude Code
+- **Target flags**: choose the backend agent and local or global scope from the
+  CLI
 
 ## 🚀 Quickstart
 
@@ -26,19 +25,35 @@ uvx skeel --help
 
 ## ⚙️ Manifest
 
-Default path: `~/.agents/.skill.yaml`
+Default path: `~/.agents/skills.yaml`
 
 ```yaml
-version: 1
-shared_dir: ~/.agents/skills
-agents:
-  - universal
-  - claude-code
 sources:
-  - source: openclaw/gogcli
-    allow_hidden_dirs: true
+  - tenzir/skills@tenzir-docs
+  - mavam/quarto-brief
+  - github: openclaw/gogcli
     skills:
       - gog
+```
+
+By default, `skeel` installs backend-managed skills into `.agents/skills` in the
+current repository. Use `-g` or `--scope user` for global installs into
+`~/.agents/skills`:
+
+```sh
+uvx skeel -g apply
+```
+
+Use `--agent` to delegate placement to a backend agent:
+
+```sh
+uvx skeel --agent claude-code --scope user apply
+```
+
+Use `--manifest` (`-m`) for a non-default desired-state manifest:
+
+```sh
+uvx skeel --manifest ./skills.yaml plan
 ```
 
 ## ✨ Usage
@@ -51,25 +66,38 @@ uvx skeel update  # update installed gh-managed skills
 uvx skeel path    # print manifest path
 ```
 
+For the default target, `diff` compares project scope against `.agents/skills`
+in the current repository and global scope against `~/.agents/skills`.
+
 ## 🧰 Backend policy
 
-By default, `skeel` installs each skill into the shared directory with:
+By default, `skeel` delegates placement to `gh skill` with:
 
 ```sh
-gh skill install <repo> <skill> --dir ~/.agents/skills --force
+gh skill install <repo> <skill> --dir .agents/skills --force
 ```
 
-For `claude-code`, it creates symlinks from `~/.claude/skills/<skill>` to the
-shared skill directory.
-
-For installers that are not backed by `gh skill`, provide source-level
-`install` commands. In this form, skeel runs those commands as the complete
-install plan and does not create additional agent links:
+The target directory, agent, and scope come from CLI flags. A bare GitHub source
+installs all skills from that repository:
 
 ```yaml
 sources:
-  - source: downstairs-dawgs/clacks
-    skills:
+  - mavam/quarto-brief
+```
+
+which plans:
+
+```sh
+gh skill install mavam/quarto-brief --all --dir .agents/skills --force
+```
+
+For installers that are not backed by `gh skill`, provide source-level
+`install` commands. In this form, skeel runs those commands as the complete
+install plan:
+
+```yaml
+sources:
+  - skills:
       - clacks
     install:
       - uvx --from slack-clacks clacks skill --mode universal
