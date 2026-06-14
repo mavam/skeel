@@ -1,0 +1,18 @@
+version: 1
+shared_dir: ~/.agents/skills
+agents:
+  - universal
+  - claude-code
+sources:
+  - source: mavam/skills
+    private: true
+    skills:
+      - mavam
+  - source: openclaw/gogcli
+    allow_hidden_dirs: true
+    skills:
+      - gog
+  - source: anthropics/skills
+    skills:
+      - frontend-design
+      - skill-creator

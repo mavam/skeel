@@ -1,0 +1,4 @@
+id: skeel
+name: skeel
+description: Declarative agent skill manager with pluggable backends.
+repository: https://github.com/mavam/skeel

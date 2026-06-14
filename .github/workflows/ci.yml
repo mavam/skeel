@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Quality / Python 3.14
+            os: ubuntu-latest
+            python-version: "3.14"
+            task: quality
+          - label: Tests / Python 3.14
+            os: ubuntu-latest
+            python-version: "3.14"
+            task: tests
+          - label: Tests / macOS
+            os: macos-26
+            python-version: "3.14"
+            task: tests
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: "**/pyproject.toml"
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --python ${{ matrix.python-version }} --dev
+
+      - name: Run Ruff lint
+        if: matrix.task == 'quality'
+        run: uv run ruff check
+
+      - name: Check Ruff formatting
+        if: matrix.task == 'quality'
+        run: uv run ruff format --check
+
+      - name: Run mypy
+        if: matrix.task == 'quality'
+        run: uv run mypy
+
+      - name: Validate changelog
+        if: matrix.task == 'quality'
+        run: uv run tenzir-ship validate
+
+      - name: Run tests
+        if: matrix.task == 'tests'
+        run: uv run pytest --durations=10
+
+  build:
+    name: Build distribution
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python
+        run: uv python install 3.14
+
+      - name: Build package
+        run: |
+          uv build
+          ls -la dist/
+
+      - name: Check package metadata
+        run: |
+          uv venv
+          uv pip install check-wheel-contents twine
+          uv run check-wheel-contents dist/*.whl
+          uv run twine check dist/*
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-package-distributions
+          path: dist/
+          retention-days: 7
+
+  test-install:
+    name: Test installation from artifact
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v7
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python
+        run: uv python install 3.14
+
+      - name: Smoke test wheel
+        run: uvx --python 3.14 --from dist/*.whl skeel --help

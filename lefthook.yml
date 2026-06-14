@@ -1,0 +1,17 @@
+pre-push:
+  parallel: true
+  commands:
+    ruff-check:
+      run: uv run ruff check
+    ruff-format:
+      run: uv run ruff format --check
+    changelog-validate:
+      run: uvx tenzir-ship validate
+
+fix:
+  parallel: false
+  commands:
+    ruff-check:
+      run: uv run ruff check --fix
+    ruff-format:
+      run: uv run ruff format

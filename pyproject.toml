@@ -1,0 +1,113 @@
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "skeel"
+version = "0.1.0"
+description = "Declarative agent skill manager with pluggable backends."
+readme = "README.md"
+requires-python = ">=3.14,<3.15"
+license = "MIT"
+authors = [{ name = "Matthias Vallentin" }]
+keywords = ["agent-skills", "agents", "cli", "github-cli", "skills"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Software Development :: Version Control",
+  "Typing :: Typed",
+]
+dependencies = ["PyYAML>=6.0.2"]
+
+[project.urls]
+Homepage = "https://github.com/mavam/skeel"
+Repository = "https://github.com/mavam/skeel"
+"Bug Tracker" = "https://github.com/mavam/skeel/issues"
+
+[project.scripts]
+skeel = "skeel.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/skeel"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src/**/*",
+  "/tests",
+  "/examples",
+  "/README.md",
+  "/LICENSE",
+  "/pyproject.toml",
+]
+exclude = [
+  "*.pyc",
+  "__pycache__",
+  ".pytest_cache",
+  ".mypy_cache",
+  ".ruff_cache",
+]
+
+[dependency-groups]
+dev = [
+  "coverage[toml]>=7.6.0",
+  "lefthook>=2.1.6",
+  "mypy>=1.11.0",
+  "pytest>=8.0",
+  "pytest-cov>=5.0.0",
+  "ruff>=0.8.0",
+  "tenzir-ship>=1.8.0",
+  "types-PyYAML>=6.0.12.20250915",
+]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-ra --strict-markers"
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+pythonpath = ["src"]
+
+[tool.mypy]
+files = ["src"]
+python_version = "3.14"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+
+[tool.coverage.run]
+source = ["src/skeel"]
+branch = true
+omit = [
+  "*/tests/*",
+]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = true
