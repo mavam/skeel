@@ -120,8 +120,10 @@ marker as the status:
 - `•` checked the skill and it is already current.
 - `→` skipped the skill. The skill is installed and available locally, but was
   not updated. This usually means the installed `SKILL.md` has no GitHub
-  metadata, or the skill is pinned, so `gh skill` cannot update it
-  automatically.
+  metadata or the skill is not represented by an updatable manifest entry.
+
+Pinned GitHub entries declared in the manifest are updated by resolving the
+configured pin and refreshing the installed files when the source changes.
 
 Skills installed by `gh skill` include provenance in `SKILL.md` frontmatter, and
 future updates can track them directly.

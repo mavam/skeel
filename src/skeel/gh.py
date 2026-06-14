@@ -242,6 +242,26 @@ def desired_aliases(skill: DesiredSkill) -> set[str]:
     return {skill.name, Path(skill.name).name, Path(skill.spec).name}
 
 
+def desired_install_specs(manifest: Manifest) -> dict[str, tuple[SourceSpec, SkillSpec]]:
+    specs: dict[str, tuple[SourceSpec, SkillSpec]] = {}
+    for source in manifest.sources:
+        for skill in source.skills:
+            desired = DesiredSkill(name=skill.name, spec=skill.spec, source=source.source)
+            for alias in desired_aliases(desired):
+                specs.setdefault(alias, (source, skill))
+    return specs
+
+
+def matching_desired_install(
+    skill: InstalledSkill,
+    specs: dict[str, tuple[SourceSpec, SkillSpec]],
+) -> tuple[SourceSpec, SkillSpec] | None:
+    for alias in {skill.name, skill.basename, skill.path.name}:
+        if spec := specs.get(alias):
+            return spec
+    return None
+
+
 def update_steps(
     installed: Sequence[InstalledSkill],
     options: GhOptions,
@@ -249,14 +269,47 @@ def update_steps(
     manifest: Manifest,
 ) -> list[SkillStep]:
     labels = desired_labels(manifest)
-    return [
-        SkillStep(
-            label=labels.get(skill.name, labels.get(skill.basename, skill.label)),
-            command=["gh", "skill", "update", skill.update_name, "--dir", str(options.directory)],
-            outcome=update_outcome(skill),
+    specs = desired_install_specs(manifest)
+    sessions: dict[str, FastInstallSession] = {}
+    steps: list[SkillStep] = []
+    for skill in sorted(installed, key=lambda skill: skill.name):
+        label = labels.get(skill.name, labels.get(skill.basename, skill.label))
+        if match := matching_desired_install(skill, specs):
+            source, skill_spec = match
+            if supports_fast_install(source, skill_spec):
+                session = sessions.setdefault(source.source, FastInstallSession(source.source))
+                command = fast_install_command(source, skill_spec)
+                steps.append(
+                    SkillStep(
+                        label=label,
+                        command=command,
+                        outcome=fast_update_outcome(skill),
+                        executor=fast_install_executor(
+                            session,
+                            source=source,
+                            skill=skill_spec,
+                            options=options,
+                            command=command,
+                        ),
+                    )
+                )
+                continue
+
+        steps.append(
+            SkillStep(
+                label=label,
+                command=[
+                    "gh",
+                    "skill",
+                    "update",
+                    skill.update_name,
+                    "--dir",
+                    str(options.directory),
+                ],
+                outcome=update_outcome(skill),
+            )
         )
-        for skill in sorted(installed, key=lambda skill: skill.name)
-    ]
+    return steps
 
 
 def update_status(result: ProcessResult) -> str:
@@ -276,6 +329,18 @@ def update_outcome(skill: InstalledSkill) -> OutcomeFactory:
     def outcome(result: ProcessResult) -> StepOutcome:
         status = update_status(result)
         after = read_skill_provenance(skill.path)
+        return StepOutcome(status=status, detail=version_transition(before, after))
+
+    return outcome
+
+
+def fast_update_outcome(skill: InstalledSkill) -> OutcomeFactory:
+    before = skill.provenance
+
+    def outcome(result: ProcessResult) -> StepOutcome:
+        del result
+        after = read_skill_provenance(skill.path)
+        status = "current" if before.version_label == after.version_label else "updated"
         return StepOutcome(status=status, detail=version_transition(before, after))
 
     return outcome

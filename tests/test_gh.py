@@ -3,7 +3,9 @@ from pathlib import Path
 
 from skeel.gh import (
     GhOptions,
+    InstalledSkill,
     SkillProvenance,
+    fast_update_outcome,
     install_steps,
     installed_skills,
     manual_install_steps,
@@ -155,8 +157,6 @@ name: wrangler
             ),
         ),
     )
-    from skeel.gh import InstalledSkill
-
     skill = InstalledSkill(
         name="wrangler",
         path=skill_path,
@@ -181,6 +181,114 @@ name: wrangler
     assert step.command == ["gh", "skill", "update", "wrangler", "--dir", str(tmp_path)]
     assert step.outcome is not None
     outcome = step.outcome(ProcessResult(command=[], returncode=0, stdout="Updated wrangler"))
+    assert outcome.status == "updated"
+    assert outcome.detail == "main@old1234 → main@new1234"
+
+
+def test_update_steps_use_archive_installer_for_pinned_manifest_skills(tmp_path: Path) -> None:
+    skill_path = tmp_path / "tenzir-asim"
+    write_skill(
+        skill_path,
+        """
+---
+metadata:
+  github-ref: refs/heads/main
+  github-repo: https://github.com/tenzir/skills
+  github-tree-sha: old123456789
+  github-path: skills/tenzir-asim
+  github-pinned: main
+name: tenzir-asim
+---
+# ASIM
+""",
+    )
+    manifest = Manifest(
+        path=Path("manifest.yaml"),
+        sources=(
+            SourceSpec(
+                source="tenzir/skills",
+                skills=(SkillSpec(spec="tenzir-asim", name="tenzir-asim", pin="main"),),
+                pin="main",
+            ),
+        ),
+    )
+    skill = InstalledSkill(
+        name="tenzir-asim",
+        path=skill_path,
+        provenance=read_skill_provenance(skill_path),
+    )
+
+    step = update_steps([skill], GhOptions(directory=tmp_path), manifest=manifest)[0]
+
+    assert step.label == "tenzir/skills@tenzir-asim"
+    assert step.command == ["gh", "api", "repos/tenzir/skills/tarball/main"]
+    assert step.executor is not None
+    assert step.outcome is not None
+
+
+def test_fast_update_outcome_marks_unchanged_pinned_skill_current(tmp_path: Path) -> None:
+    skill_path = tmp_path / "tenzir-asim"
+    write_skill(
+        skill_path,
+        """
+---
+metadata:
+  github-ref: refs/heads/main
+  github-repo: https://github.com/tenzir/skills
+  github-tree-sha: old123456789
+name: tenzir-asim
+---
+# ASIM
+""",
+    )
+    skill = InstalledSkill(
+        name="tenzir-asim",
+        path=skill_path,
+        provenance=read_skill_provenance(skill_path),
+    )
+
+    outcome = fast_update_outcome(skill)(ProcessResult(command=[], returncode=0))
+
+    assert outcome.status == "current"
+    assert outcome.detail == "main@old1234 → main@old1234"
+
+
+def test_fast_update_outcome_marks_changed_pinned_skill_updated(tmp_path: Path) -> None:
+    skill_path = tmp_path / "tenzir-asim"
+    write_skill(
+        skill_path,
+        """
+---
+metadata:
+  github-ref: refs/heads/main
+  github-repo: https://github.com/tenzir/skills
+  github-tree-sha: old123456789
+name: tenzir-asim
+---
+# ASIM
+""",
+    )
+    skill = InstalledSkill(
+        name="tenzir-asim",
+        path=skill_path,
+        provenance=read_skill_provenance(skill_path),
+    )
+    write_skill(
+        skill_path,
+        """
+---
+metadata:
+  github-ref: refs/heads/main
+  github-repo: https://github.com/tenzir/skills
+  github-tree-sha: new123456789
+name: tenzir-asim
+---
+# ASIM
+""",
+    )
+
+    outcome = fast_update_outcome(skill)(ProcessResult(command=[], returncode=0))
+
     assert outcome.status == "updated"
     assert outcome.detail == "main@old1234 → main@new1234"
 
