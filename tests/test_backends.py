@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from skeel.backends import GhSkillBackend, quote_command, symlink_step
+from skeel.backends import GhSkillBackend, manual_install_steps, quote_command, symlink_step
 from skeel.manifest import Manifest, SkillSpec, SourceSpec
 
 
@@ -30,6 +30,27 @@ def test_gh_install_step() -> None:
         "/tmp/agents/skills",
         "--force",
         "--allow-hidden-dirs",
+    ]
+
+
+def test_manual_install_steps() -> None:
+    source = SourceSpec(
+        source="downstairs-dawgs/clacks",
+        skills=(SkillSpec(spec="clacks", name="clacks"),),
+        install=(("uvx", "--from", "slack-clacks", "clacks", "skill", "--mode", "universal"),),
+    )
+
+    steps = manual_install_steps(source)
+
+    assert steps[0].label == "downstairs-dawgs/clacks"
+    assert steps[0].command == [
+        "uvx",
+        "--from",
+        "slack-clacks",
+        "clacks",
+        "skill",
+        "--mode",
+        "universal",
     ]
 
 

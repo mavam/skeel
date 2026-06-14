@@ -53,7 +53,7 @@ uvx skeel path    # print manifest path
 
 ## 🧰 Backend policy
 
-`skeel` installs each skill into the shared directory with:
+By default, `skeel` installs each skill into the shared directory with:
 
 ```sh
 gh skill install <repo> <skill> --dir ~/.agents/skills --force
@@ -61,6 +61,20 @@ gh skill install <repo> <skill> --dir ~/.agents/skills --force
 
 For `claude-code`, it creates symlinks from `~/.claude/skills/<skill>` to the
 shared skill directory.
+
+For installers that are not backed by `gh skill`, provide source-level
+`install` commands. In this form, skeel runs those commands as the complete
+install plan and does not create additional agent links:
+
+```yaml
+sources:
+  - source: downstairs-dawgs/clacks
+    skills:
+      - clacks
+    install:
+      - uvx --from slack-clacks clacks skill --mode universal
+      - uvx --from slack-clacks clacks skill --mode claude
+```
 
 ## 📄 License
 

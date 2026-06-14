@@ -45,3 +45,48 @@ sources:
     assert manifest.agents == ("universal", "claude-code")
     assert manifest.desired_skill_names == {"mavam", "gog"}
     assert manifest.sources[1].allow_hidden_dirs is True
+
+
+def test_load_manual_install_source(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "skills.yaml"
+    manifest_path.write_text(
+        """
+agents:
+  - universal
+sources:
+  - source: downstairs-dawgs/clacks
+    skills:
+      - clacks
+    install:
+      - uvx --from slack-clacks clacks skill --mode universal
+      - [uvx, --from, slack-clacks, clacks, skill, --mode, claude]
+""".strip()
+    )
+
+    manifest = load_manifest(manifest_path)
+
+    assert manifest.sources[0].source == "downstairs-dawgs/clacks"
+    assert manifest.sources[0].install == (
+        ("uvx", "--from", "slack-clacks", "clacks", "skill", "--mode", "universal"),
+        ("uvx", "--from", "slack-clacks", "clacks", "skill", "--mode", "claude"),
+    )
+
+
+def test_manual_install_source_does_not_require_source(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "skills.yaml"
+    manifest_path.write_text(
+        """
+agents:
+  - universal
+sources:
+  - skills:
+      - clacks
+    install:
+      - uvx --from slack-clacks clacks skill --mode universal
+""".strip()
+    )
+
+    manifest = load_manifest(manifest_path)
+
+    assert manifest.sources[0].source is None
+    assert manifest.desired_skill_names == {"clacks"}

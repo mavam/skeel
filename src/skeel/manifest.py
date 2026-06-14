@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -21,12 +22,13 @@ class SkillSpec:
 
 @dataclass(frozen=True)
 class SourceSpec:
-    source: str
+    source: str | None
     skills: tuple[SkillSpec, ...]
     backend: str = "gh"
     allow_hidden_dirs: bool = False
     private: bool = False
     pin: str | None = None
+    install: tuple[tuple[str, ...], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,14 @@ def infer_skill_name(spec: str) -> str:
     return Path(spec).name
 
 
+def parse_command(value: Any) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return tuple(shlex.split(value))
+    if isinstance(value, list) and all(isinstance(part, str) for part in value):
+        return tuple(value)
+    raise ValueError(f"invalid command entry: {value!r}")
+
+
 def parse_skill(value: Any, *, source_pin: str | None = None) -> SkillSpec:
     if isinstance(value, str):
         return SkillSpec(spec=value, name=infer_skill_name(value), pin=source_pin)
@@ -76,15 +86,18 @@ def parse_skill(value: Any, *, source_pin: str | None = None) -> SkillSpec:
 def parse_source(value: Any) -> SourceSpec:
     if not isinstance(value, dict):
         raise ValueError(f"invalid source entry: {value!r}")
-    source = str(value.get("source") or "")
-    if not source:
-        raise ValueError(f"source entry missing source: {value!r}")
+    source_value = value.get("source")
+    source = str(source_value) if source_value else None
+    install = tuple(parse_command(command) for command in value.get("install") or [])
+    if not source and not install:
+        raise ValueError(f"source entry missing source or install commands: {value!r}")
     backend = str(value.get("backend") or "gh")
     source_pin = value.get("pin")
     pin = str(source_pin) if source_pin else None
     skills = tuple(parse_skill(skill, source_pin=pin) for skill in value.get("skills") or [])
     if not skills:
-        raise ValueError(f"source {source} has no skills")
+        label = source or "manual source"
+        raise ValueError(f"source {label} has no skills")
     return SourceSpec(
         source=source,
         skills=skills,
@@ -92,6 +105,7 @@ def parse_source(value: Any) -> SourceSpec:
         allow_hidden_dirs=bool(value.get("allow_hidden_dirs") or value.get("allow-hidden-dirs")),
         private=bool(value.get("private")),
         pin=str(source_pin) if source_pin else None,
+        install=install,
     )
 
 

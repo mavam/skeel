@@ -49,6 +49,11 @@ class Runner:
         return result.returncode
 
 
+def manual_install_steps(source: SourceSpec) -> list[InstallStep]:
+    label = source.source or ", ".join(skill.name for skill in source.skills)
+    return [InstallStep(label=label, command=list(command)) for command in source.install]
+
+
 class GhSkillBackend:
     name = "gh"
 
@@ -58,6 +63,8 @@ class GhSkillBackend:
         source: SourceSpec,
         skill: SkillSpec,
     ) -> list[InstallStep]:
+        if not source.source:
+            raise ValueError("gh backend sources must define source")
         command = [
             "gh",
             "skill",

@@ -12,6 +12,7 @@ from .backends import (
     ensure_claude_symlink,
     get_backend,
     installed_skill_names,
+    manual_install_steps,
     quote_command,
     symlink_step,
 )
@@ -51,6 +52,9 @@ def print_diff(manifest: Manifest, *, warning: bool = False) -> bool:
 
 def iter_install_plan(manifest: Manifest) -> Iterator[InstallStep]:
     for source in manifest.sources:
+        if source.install:
+            yield from manual_install_steps(source)
+            continue
         backend = get_backend(source.backend)
         for skill in source.skills:
             yield from backend.install_steps(manifest, source, skill)
@@ -72,6 +76,11 @@ def command_apply(manifest: Manifest, *, dry_run: bool = False) -> int:
     print_diff(manifest, warning=True)
     runner = Runner(dry_run=dry_run)
     for source in manifest.sources:
+        if source.install:
+            for step in manual_install_steps(source):
+                print(f"📦 Installing {step.label}…")
+                runner.run(step)
+            continue
         backend = get_backend(source.backend)
         for skill in source.skills:
             for step in backend.install_steps(manifest, source, skill):
@@ -90,7 +99,7 @@ def command_apply(manifest: Manifest, *, dry_run: bool = False) -> int:
 def command_update(manifest: Manifest, *, dry_run: bool = False) -> int:
     print_diff(manifest, warning=True)
     runner = Runner(dry_run=dry_run)
-    backends = {source.backend for source in manifest.sources}
+    backends = {source.backend for source in manifest.sources if not source.install}
     print("🧠 Updating skills…")
     for backend_name in sorted(backends):
         backend = get_backend(backend_name)
