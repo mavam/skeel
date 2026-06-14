@@ -27,7 +27,6 @@ jobs:
     with:
       intro: ${{ inputs.intro }}
       title: ${{ inputs.title }}
-      use_push_token: true
       git-add-paths: pyproject.toml uv.lock
       pre-create: |
         uv sync --python 3.14 --dev
@@ -38,8 +37,6 @@ jobs:
         uv build
       post-create: |
         uv lock
-    secrets:
-      push_token: ${{ secrets.PUSH_TOKEN }}
 
   publish:
     name: Publish package to PyPI
