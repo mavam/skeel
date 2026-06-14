@@ -1,0 +1,8 @@
+created: 2026-06-14
+title: Declarative skill management CLI
+intro: >-
+  skeel introduces a Python 3.14 CLI for managing agent skills from a desired-state
+  YAML manifest. Users can preview, apply, and update GitHub-hosted skills across
+  shared and agent-specific directories with one workflow.
+source:
+  mode: sync-stable-queue
