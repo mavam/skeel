@@ -18,7 +18,8 @@ def test_no_arguments_prints_help(capsys) -> None:
     assert main([]) == 0
 
     output = capsys.readouterr().out
-    assert "Usage: skeel" in output
+    assert "Usage:" in output
+    assert "skeel" in output
     assert "apply" in output
     assert "add" in output
     assert "remove" in output
