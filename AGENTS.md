@@ -20,3 +20,10 @@ uvx lefthook install
 ```
 
 Pushing runs the pre-push quality gate automatically.
+
+## Releasing
+
+- Use `tenzir-ship` for release engineering
+- Add changelog entries for user facing changes
+- Before releasing, ensure `main` is in sync with `origin/main`
+- To release, dispatch .github/workflows/release.yaml with a title & intro
