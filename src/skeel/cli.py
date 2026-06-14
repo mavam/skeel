@@ -1080,6 +1080,7 @@ class Skeel(Command):
     scope: str | None = scope_arg()
     dry_run: bool = dry_run_arg()
     json: bool = json_arg()
+    version: bool = arg(False, help="Print the skeel version and exit.")
     subcommand: PathCommand | Diff | ListCommand | Apply | Add | Remove | Update | None = None
 
     @override
@@ -1107,8 +1108,12 @@ def main(argv: list[str] | None = None) -> int:
     configure_clypi()
     try:
         args = sys.argv[1:] if argv is None else argv
-        if not args:
+        if len(args) == 0:
             Skeel.print_help()
+            return 0  # type: ignore[unreachable]
+        if args == ["--version"]:
+            print(f"skeel {__version__}")
+            return 0
         command = Skeel.parse(args)
         return asyncio.run(command.execute())
     except SystemExit as error:

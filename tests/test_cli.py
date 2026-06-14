@@ -2,6 +2,7 @@ import asyncio
 import json
 from pathlib import Path
 
+from skeel import __version__
 from skeel.cli import diff_skills, main
 from skeel.gh import GhOptions, InstalledSkill
 from skeel.io import ProcessResult, ProcessRunner
@@ -23,6 +24,12 @@ def test_no_arguments_prints_help(capsys) -> None:
     assert "apply" in output
     assert "add" in output
     assert "remove" in output
+
+
+def test_version_flag_prints_version(capsys) -> None:
+    assert main(["--version"]) == 0
+
+    assert capsys.readouterr().out.strip() == f"skeel {__version__}"
 
 
 def test_apply_without_default_manifest_is_noop(tmp_path, capsys, monkeypatch) -> None:
