@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +19,7 @@ from .io import Command, ProcessResult, ProcessRunner, StepExecutor, StepOutcome
 from .manifest import DesiredSkill, Manifest, SkillSpec, SourceSpec
 
 OutcomeFactory = Callable[[ProcessResult], StepOutcome]
+MIN_GH_VERSION = (2, 94, 0)
 
 
 @dataclass(frozen=True)
@@ -118,6 +120,27 @@ def target_args(options: GhOptions) -> list[str]:
     return ["--dir", str(options.directory)]
 
 
+def parse_gh_version(output: str) -> tuple[int, int, int] | None:
+    match = re.search(r"gh version (\d+)\.(\d+)\.(\d+)", output)
+    if match is None:
+        return None
+    major, minor, patch = match.groups()
+    return (int(major), int(minor), int(patch))
+
+
+async def ensure_minimum_gh_version(runner: ProcessRunner) -> None:
+    result = await runner.run(["gh", "--version"], capture_output=True)
+    if result.returncode:
+        message = result.stderr.strip() or result.stdout.strip() or "gh --version failed"
+        raise RuntimeError(message)
+    version = parse_gh_version(result.stdout or result.stderr)
+    if version is not None and version < MIN_GH_VERSION:
+        raise RuntimeError(
+            "skeel requires GitHub CLI 2.94.0 or newer for `gh skill list --json`; "
+            "update gh and try again"
+        )
+
+
 def install_steps(source: SourceSpec, options: GhOptions) -> list[SkillStep]:
     steps: list[SkillStep] = []
     skills: tuple[SkillSpec | None, ...] = (None,) if source.install_all else source.skills
@@ -177,6 +200,7 @@ async def installed_skills(
     directory = options.directory
     if directory and not directory.exists():
         return ()
+    await ensure_minimum_gh_version(runner)
 
     command = [
         "gh",

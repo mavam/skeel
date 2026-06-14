@@ -430,6 +430,10 @@ sources:
     class Runner:
         async def run(self, command, **kwargs):
             assert kwargs == {"capture_output": True}
+            if command == ["gh", "--version"]:
+                return ProcessResult(command=command, returncode=0, stdout="gh version 2.94.0")
+            if command[:3] == ["gh", "skill", "list"]:
+                return ProcessResult(command=command, returncode=0, stdout="[]")
             assert "--allow-hidden-dirs" in command
             return ProcessResult(
                 command=command,

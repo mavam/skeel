@@ -1,6 +1,8 @@
 import asyncio
 from pathlib import Path
 
+import pytest
+
 from skeel.gh import (
     GhOptions,
     InstalledSkill,
@@ -9,6 +11,7 @@ from skeel.gh import (
     install_steps,
     installed_skills,
     manual_install_steps,
+    parse_gh_version,
     read_skill_provenance,
     update_steps,
 )
@@ -25,6 +28,17 @@ class FakeRunner:
         self.calls.append(command)
         assert kwargs == {"capture_output": True}
         return self.result
+
+
+class SequenceRunner:
+    def __init__(self, *results: ProcessResult) -> None:
+        self.results = list(results)
+        self.calls: list[list[str]] = []
+
+    async def run(self, command, **kwargs):
+        self.calls.append(command)
+        assert kwargs == {"capture_output": True}
+        return self.results.pop(0)
 
 
 def write_skill(path: Path, frontmatter: str) -> None:
@@ -112,7 +126,8 @@ name: caveman
 # Caveman
 """,
     )
-    runner = FakeRunner(
+    runner = SequenceRunner(
+        ProcessResult(command=[], returncode=0, stdout="gh version 2.94.0", stderr=""),
         ProcessResult(
             command=[],
             returncode=0,
@@ -121,7 +136,7 @@ name: caveman
                 ' "sourceURL": "", "version": "", "pinned": false}]'
             ),
             stderr="",
-        )
+        ),
     )
 
     skills = asyncio.run(installed_skills(GhOptions(directory=tmp_path / "skills"), runner))
@@ -131,6 +146,23 @@ name: caveman
     assert skills[0].github_source == "mattpocock/skills"
     assert skills[0].label == "mattpocock/skills@caveman"
     assert skills[0].version_label == "main@abcdef1"
+
+
+def test_parse_gh_version() -> None:
+    assert parse_gh_version("gh version 2.94.0 (2026-06-14)") == (2, 94, 0)
+    assert parse_gh_version("unexpected") is None
+
+
+def test_installed_skills_rejects_old_gh_version(tmp_path: Path) -> None:
+    (tmp_path / "skills").mkdir()
+    runner = SequenceRunner(
+        ProcessResult(command=[], returncode=0, stdout="gh version 2.93.0", stderr=""),
+    )
+
+    with pytest.raises(RuntimeError, match="requires GitHub CLI 2.94.0"):
+        asyncio.run(installed_skills(GhOptions(directory=tmp_path / "skills"), runner))
+
+    assert runner.calls == [["gh", "--version"]]
 
 
 def test_update_steps_use_manifest_labels_and_report_version_transition(tmp_path: Path) -> None:
