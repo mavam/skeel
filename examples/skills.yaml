@@ -1,14 +1,12 @@
 sources:
-  - tenzir/skills@tenzir-docs
-  - github: openclaw/gogcli
+  tenzir/skills:
+    - tenzir-docs
+    - tenzir-ocsf
+    - tenzir-ecs
+  openclaw/gogcli:
+    - gog
+  slack-clacks/clacks:
     skills:
-      - gog
-  - github: tenzir/skills
-    skills:
-      - tenzir-ocsf
-      - tenzir-ecs
-  - skills:
       - clacks
     install:
-      - uvx --from slack-clacks clacks skill --mode universal
-      - uvx --from slack-clacks clacks skill --mode claude
+      - uvx --from slack-clacks clacks skill --mode universal --force

@@ -2,7 +2,13 @@ from pathlib import Path
 
 import pytest
 
-from skeel.manifest import infer_skill_name, load_manifest, manifest_path
+from skeel.manifest import (
+    infer_skill_name,
+    load_manifest,
+    manifest_path,
+    remove_manifest_source,
+    upsert_manifest_source,
+)
 
 
 def write_manifest(tmp_path: Path, content: str) -> Path:
@@ -23,41 +29,41 @@ def test_infer_skill_name(spec: str, name: str) -> None:
     assert infer_skill_name(spec) == name
 
 
-def test_wildcard_is_rejected() -> None:
-    with pytest.raises(ValueError, match="wildcard"):
-        infer_skill_name("*")
-
-
-def test_default_manifest_path() -> None:
-    assert manifest_path() == Path("~/.agents/skills.yaml").expanduser()
-
-
 def test_load_manifest_sources(tmp_path: Path) -> None:
     path = write_manifest(
         tmp_path,
         """
 sources:
-  - tenzir/skills@tenzir-docs
-  - mavam/quarto-brief
-  - github: openclaw/gogcli
-    skills:
-      - gog
-  - github: mattpocock/skills
+  tenzir/skills:
+    - tenzir-docs
+  mavam/quarto-brief:
+  mattpocock/skills:
     pin: v1
     skills:
       - caveman
       - grill-me
-""".strip(),
+  slack-clacks/clacks:
+    skills:
+      - clacks
+    install:
+      - uvx --from slack-clacks clacks skill --mode universal --force
+""",
     )
 
     manifest = load_manifest(path)
 
     assert manifest.path == path
-    assert manifest.desired_skill_names == {"tenzir-docs", "gog", "caveman", "grill-me"}
-    assert manifest.has_dynamic_sources is True
+    assert manifest_path() == Path(".agents/skills.yaml")
+    assert manifest.desired_skill_names == {"tenzir-docs", "caveman", "grill-me", "clacks"}
+    assert [(skill.name, skill.source) for skill in manifest.desired_skills] == [
+        ("tenzir-docs", "tenzir/skills"),
+        ("caveman", "mattpocock/skills"),
+        ("grill-me", "mattpocock/skills"),
+        ("clacks", "slack-clacks/clacks"),
+    ]
 
-    shorthand, dynamic, explicit, pinned = manifest.sources
-    assert (shorthand.source, shorthand.skills[0].name, shorthand.install_all) == (
+    selected, dynamic, pinned, manual = manifest.sources
+    assert (selected.source, selected.skills[0].name, selected.install_all) == (
         "tenzir/skills",
         "tenzir-docs",
         False,
@@ -67,78 +73,22 @@ sources:
         (),
         True,
     )
-    assert explicit.source == "openclaw/gogcli"
-    assert explicit.skills[0].name == "gog"
     assert [skill.pin for skill in pinned.skills] == ["v1", "v1"]
+    assert manual.install == (
+        ("uvx", "--from", "slack-clacks", "clacks", "skill", "--mode", "universal", "--force"),
+    )
 
 
-def test_source_shorthand_rejects_pins(tmp_path: Path) -> None:
+def test_old_source_list_is_rejected(tmp_path: Path) -> None:
     path = write_manifest(
         tmp_path,
         """
 sources:
-  - tenzir/skills@tenzir-docs@v1
-""".strip(),
+  - tenzir/skills
+""",
     )
 
-    with pytest.raises(ValueError, match="mapping form for pins"):
-        load_manifest(path)
-
-
-def test_manual_install_source_tracks_desired_skills(tmp_path: Path) -> None:
-    path = write_manifest(
-        tmp_path,
-        """
-sources:
-  - skills:
-      - clacks
-      - name: clacks-claude
-        path: clacks
-    install:
-      - uvx --from slack-clacks clacks skill --mode universal
-      - [uvx, --from, slack-clacks, clacks, skill, --mode, claude]
-""".strip(),
-    )
-
-    manifest = load_manifest(path)
-
-    assert manifest.desired_skill_names == {"clacks", "clacks-claude"}
-    assert manifest.sources[0].source is None
-    assert manifest.sources[0].install == (
-        ("uvx", "--from", "slack-clacks", "clacks", "skill", "--mode", "universal"),
-        ("uvx", "--from", "slack-clacks", "clacks", "skill", "--mode", "claude"),
-    )
-
-
-def test_source_without_skills_installs_all(tmp_path: Path) -> None:
-    path = write_manifest(
-        tmp_path,
-        """
-sources:
-  - github: mavam/quarto-brief
-""".strip(),
-    )
-
-    manifest = load_manifest(path)
-
-    assert manifest.sources[0].source == "mavam/quarto-brief"
-    assert manifest.sources[0].skills == ()
-    assert manifest.sources[0].install_all is True
-
-
-def test_source_and_github_conflict_is_rejected(tmp_path: Path) -> None:
-    path = write_manifest(
-        tmp_path,
-        """
-sources:
-  - source: owner/one
-    github: owner/two
-    skills:
-      - skill
-""".strip(),
-    )
-
-    with pytest.raises(ValueError, match="cannot define both"):
+    with pytest.raises(ValueError, match="sources must be a mapping"):
         load_manifest(path)
 
 
@@ -147,22 +97,73 @@ def test_manual_install_source_requires_skills(tmp_path: Path) -> None:
         tmp_path,
         """
 sources:
-  - install:
-      - uvx --from slack-clacks clacks skill --mode universal
-""".strip(),
+  slack-clacks/clacks:
+    install:
+      - uvx --from slack-clacks clacks skill --mode universal --force
+""",
     )
 
     with pytest.raises(ValueError, match="has no skills"):
         load_manifest(path)
 
 
-def test_manifest_requires_sources(tmp_path: Path) -> None:
+def test_empty_manifest_has_no_desired_skills(tmp_path: Path) -> None:
+    path = write_manifest(tmp_path, "sources: {}")
+
+    manifest = load_manifest(path)
+
+    assert manifest.sources == ()
+    assert manifest.desired_skill_names == set()
+
+
+def test_upsert_manifest_source_writes_keyed_schema(tmp_path: Path) -> None:
+    path = tmp_path / ".agents" / "skills.yaml"
+
+    result = upsert_manifest_source(path, "tenzir/skills", "tenzir-docs")
+    assert result.changed is True
+    assert path.read_text() == "sources:\n  tenzir/skills:\n    - tenzir-docs\n"
+
+    result = upsert_manifest_source(path, "tenzir/skills", "tenzir-docs")
+    assert result.changed is False
+
+    result = upsert_manifest_source(path, "tenzir/skills", "tenzir-docs@main")
+    assert result.changed is True
+    result = upsert_manifest_source(path, "mavam/quarto-brief")
+    assert result.changed is True
+
+    assert path.read_text() == (
+        "sources:\n  tenzir/skills:\n    - tenzir-docs@main\n  mavam/quarto-brief:\n"
+    )
+
+
+def test_upsert_manifest_source_dry_run_does_not_write(tmp_path: Path) -> None:
+    path = tmp_path / ".agents" / "skills.yaml"
+
+    result = upsert_manifest_source(path, "tenzir/skills", "tenzir-docs", dry_run=True)
+
+    assert result.changed is True
+    assert not path.exists()
+    assert result.manifest.desired_skill_names == {"tenzir-docs"}
+
+
+def test_remove_manifest_source_updates_keyed_schema(tmp_path: Path) -> None:
     path = write_manifest(
         tmp_path,
         """
-sources: []
-""".strip(),
+sources:
+  tenzir/skills:
+    - tenzir-docs
+    - tenzir-ecs
+  mavam/quarto-brief:
+""",
     )
 
-    with pytest.raises(ValueError, match="at least one source"):
-        load_manifest(path)
+    result = remove_manifest_source(path, "tenzir/skills", "tenzir-docs")
+    assert result.changed is True
+    assert path.read_text() == (
+        "sources:\n  tenzir/skills:\n    - tenzir-ecs\n  mavam/quarto-brief:\n"
+    )
+
+    result = remove_manifest_source(path, "mavam/quarto-brief")
+    assert result.changed is True
+    assert path.read_text() == "sources:\n  tenzir/skills:\n    - tenzir-ecs\n"
