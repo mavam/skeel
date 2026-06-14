@@ -1,0 +1,6 @@
+# Keep actionlint current with GitHub-hosted runner labels that may not be
+# known by the locally installed actionlint version yet.
+paths:
+  .github/workflows/ci.yml:
+    ignore:
+      - 'label "macos-26" is unknown'
