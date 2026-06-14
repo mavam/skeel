@@ -5,7 +5,6 @@ agents:
   - claude-code
 sources:
   - source: mavam/skills
-    private: true
     skills:
       - mavam
   - source: openclaw/gogcli

@@ -26,7 +26,6 @@ class SourceSpec:
     skills: tuple[SkillSpec, ...]
     backend: str = "gh"
     allow_hidden_dirs: bool = False
-    private: bool = False
     pin: str | None = None
     install: tuple[tuple[str, ...], ...] = ()
 
@@ -103,7 +102,6 @@ def parse_source(value: Any) -> SourceSpec:
         skills=skills,
         backend=backend,
         allow_hidden_dirs=bool(value.get("allow_hidden_dirs") or value.get("allow-hidden-dirs")),
-        private=bool(value.get("private")),
         pin=str(source_pin) if source_pin else None,
         install=install,
     )
