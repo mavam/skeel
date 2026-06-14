@@ -87,6 +87,61 @@ sources:
     assert payload["steps"][1]["command"] == ["rm", "-rf", str(target / "obsolete")]
 
 
+def test_apply_uses_diff_markers_for_install_and_remove(tmp_path, capsys, monkeypatch) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  tenzir/skills:
+    - tenzir-ecs
+""",
+    )
+    workdir = tmp_path / "work"
+    target = workdir / ".agents" / "skills"
+    (target / "obsolete").mkdir(parents=True)
+    monkeypatch.chdir(workdir)
+
+    async def fake_installed_skills(options, runner):
+        assert options.directory == target
+        return (InstalledSkill(name="obsolete", path=target / "obsolete"),)
+
+    class Runner:
+        async def run(self, command, **kwargs):
+            assert kwargs == {"capture_output": True}
+            return ProcessResult(command=command, returncode=0)
+
+    printed = []
+
+    class Spinner:
+        def __init__(self, title: str, *, suffix: str, output: str) -> None:
+            self._task = None
+            self._capture = False
+            self._manual_exit = False
+            self.title = title
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def fail(self, message: str) -> None:
+            raise AssertionError(message)
+
+        def _print(self, label: str, *, icon: str, color: str, end: str) -> None:
+            printed.append((icon, color, label))
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+    monkeypatch.setattr("skeel.cli.ProcessRunner", Runner)
+    monkeypatch.setattr("skeel.io.Spinner", Spinner)
+
+    assert main(["--manifest", str(path), "apply"]) == 0
+    assert printed == [
+        ("+", "green", "tenzir/skills@tenzir-ecs"),
+        ("-", "red", "obsolete"),
+    ]
+
+
 def test_apply_reinstall_can_target_manifest_source(tmp_path, capsys, monkeypatch) -> None:
     path = write_manifest(
         tmp_path,

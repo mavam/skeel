@@ -572,6 +572,7 @@ async def run_steps(
                 dry_run=dry_run,
                 outcome=step.outcome,
                 executor=step.executor,
+                default_status="installed" if done == "installed" else None,
             )
         results.append(result)
         if result.returncode not in (None, 0):

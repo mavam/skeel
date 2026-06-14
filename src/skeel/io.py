@@ -67,6 +67,10 @@ def quote_command(command: Sequence[str]) -> str:
 
 def status_marker(status: str | None) -> StatusMarker | None:
     match status:
+        case "installed":
+            return "+", "green"
+        case "removed":
+            return "-", "red"
         case "current":
             return "•", "bright_black"
         case "skipped":
@@ -200,6 +204,7 @@ class Terminal:
         dry_run: bool = False,
         outcome: Callable[[ProcessResult], StepOutcome] | None = None,
         executor: StepExecutor | None = None,
+        default_status: str | None = None,
     ) -> StepResult:
         del action, done
         if dry_run:
@@ -219,7 +224,7 @@ class Terminal:
                 label=label,
                 command=command,
                 returncode=result.returncode,
-                status=step_outcome.status,
+                status=step_outcome.status or (default_status if not failed else None),
                 detail=step_outcome.detail,
                 stdout=result.stdout if failed else "",
                 stderr=result.stderr if failed else "",
@@ -233,7 +238,7 @@ class Terminal:
                 await spinner.fail(label)
             else:
                 step_outcome = outcome(result) if outcome else StepOutcome()
-                step_status = step_outcome.status
+                step_status = step_outcome.status or default_status
                 detail = step_outcome.detail
                 marker = status_marker(step_status)
                 message = self.label_with_detail(label, detail)
@@ -299,7 +304,11 @@ class Terminal:
             if returncode:
                 await spinner.fail(label)
             else:
-                await spinner.done(label)
+                marker = status_marker("removed")
+                if marker is None:
+                    await spinner.done(label)
+                else:
+                    await self._finish_spinner(spinner, label, marker=marker)
         return StepResult(
             label=label,
             command=command,
