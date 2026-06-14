@@ -1,0 +1,9 @@
+created: 2026-06-14
+title: Desired-state skill reconciliation
+intro: >-
+  This release makes skeel manage skill manifests as editable desired state with JSON
+  output for automation. It also improves reconciliation, updates, and pinned GitHub
+  reinstalls so managed skills stay accurate and fast to refresh.
+source:
+  mode: sync-stable-queue
+  previous_stable: v0.1.0
