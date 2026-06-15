@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,12 +33,16 @@ class FastInstallError(RuntimeError):
     pass
 
 
+LOCKFILE_LOCK = threading.Lock()
+
+
 class FastInstallSession:
     def __init__(self, source: str) -> None:
         self.source = source
         self._archives: dict[str, tuple[tempfile.TemporaryDirectory[str], Path, ResolvedRef]] = {}
         self._tree_shas: dict[str, dict[str, str]] = {}
         self._skills: dict[str, tuple[DiscoveredSkill, ...]] = {}
+        self._lock = threading.RLock()
 
     def install(
         self,
@@ -70,23 +75,29 @@ class FastInstallSession:
         self,
         pin: str,
     ) -> tuple[tempfile.TemporaryDirectory[str], Path, ResolvedRef]:
-        if pin not in self._archives:
+        with self._lock:
+            if pin in self._archives:
+                return self._archives[pin]
             resolved = resolve_ref(self.source, pin)
             tempdir = tempfile.TemporaryDirectory(prefix="skeel-")
             root = download_archive(self.source, resolved.commit_sha, Path(tempdir.name))
             self._archives[pin] = (tempdir, root, resolved)
-        return self._archives[pin]
+            return self._archives[pin]
 
     def _source_tree_shas(self, commit_sha: str) -> dict[str, str]:
-        if commit_sha not in self._tree_shas:
+        with self._lock:
+            if commit_sha in self._tree_shas:
+                return self._tree_shas[commit_sha]
             self._tree_shas[commit_sha] = fetch_tree_shas(self.source, commit_sha)
-        return self._tree_shas[commit_sha]
+            return self._tree_shas[commit_sha]
 
     def _source_skills(self, root: Path) -> tuple[DiscoveredSkill, ...]:
         key = str(root)
-        if key not in self._skills:
+        with self._lock:
+            if key in self._skills:
+                return self._skills[key]
             self._skills[key] = discover_skills(root)
-        return self._skills[key]
+            return self._skills[key]
 
 
 def supports_fast_install(source: SourceSpec, skill: SkillSpec | None) -> bool:
@@ -314,31 +325,32 @@ def record_lockfile(
     pinned_ref: str,
 ) -> None:
     path = Path.home() / ".agents" / ".skill-lock.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    data = read_lockfile(path)
-    skills = data.setdefault("skills", {})
-    if not isinstance(skills, dict):
-        skills = {}
-        data["skills"] = skills
+    with LOCKFILE_LOCK:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = read_lockfile(path)
+        skills = data.setdefault("skills", {})
+        if not isinstance(skills, dict):
+            skills = {}
+            data["skills"] = skills
 
-    now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-    existing = skills.get(skill_name)
-    installed_at = (
-        value_as_str(existing.get("installedAt")) if isinstance(existing, dict) else ""
-    ) or now
-    entry = {
-        "source": f"{owner}/{repo}",
-        "sourceType": "github",
-        "sourceUrl": f"https://github.com/{owner}/{repo}.git",
-        "skillPath": skill_path,
-        "skillFolderHash": tree_sha,
-        "installedAt": installed_at,
-        "updatedAt": now,
-    }
-    if pinned_ref:
-        entry["pinnedRef"] = pinned_ref
-    skills[skill_name] = entry
-    path.write_text(json.dumps(data, indent=2) + "\n")
+        now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        existing = skills.get(skill_name)
+        installed_at = (
+            value_as_str(existing.get("installedAt")) if isinstance(existing, dict) else ""
+        ) or now
+        entry = {
+            "source": f"{owner}/{repo}",
+            "sourceType": "github",
+            "sourceUrl": f"https://github.com/{owner}/{repo}.git",
+            "skillPath": skill_path,
+            "skillFolderHash": tree_sha,
+            "installedAt": installed_at,
+            "updatedAt": now,
+        }
+        if pinned_ref:
+            entry["pinnedRef"] = pinned_ref
+        skills[skill_name] = entry
+        path.write_text(json.dumps(data, indent=2) + "\n")
 
 
 def read_lockfile(path: Path) -> dict[str, Any]:

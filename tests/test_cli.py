@@ -3,9 +3,9 @@ import json
 from pathlib import Path
 
 from skeel import __version__
-from skeel.cli import diff_skills, main
-from skeel.gh import GhOptions, InstalledSkill
-from skeel.io import ProcessResult, ProcessRunner
+from skeel.cli import Runtime, diff_skills, main, run_steps
+from skeel.gh import GhOptions, InstalledSkill, SkillStep
+from skeel.io import ProcessResult, ProcessRunner, StepOutcome, Terminal, detail_text, label_text
 from skeel.manifest import Manifest, SkillSpec, SourceSpec, load_manifest
 
 
@@ -110,35 +110,13 @@ sources:
             assert kwargs == {"capture_output": True}
             return ProcessResult(command=command, returncode=0)
 
-    printed = []
-
-    class Spinner:
-        def __init__(self, title: str, *, suffix: str, output: str) -> None:
-            self._task = None
-            self._capture = False
-            self._manual_exit = False
-            self.title = title
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return None
-
-        async def fail(self, message: str) -> None:
-            raise AssertionError(message)
-
-        def _print(self, label: str, *, icon: str, color: str, end: str) -> None:
-            printed.append((icon, color, label))
-
     monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
     monkeypatch.setattr("skeel.cli.ProcessRunner", Runner)
-    monkeypatch.setattr("skeel.io.Spinner", Spinner)
 
     assert main(["--manifest", str(path), "apply"]) == 0
-    assert printed == [
-        ("+", "green", "tenzir/skills@tenzir-ecs"),
-        ("-", "red", "obsolete"),
+    assert capsys.readouterr().err.splitlines() == [
+        "+ tenzir-ecs tenzir/skills",
+        "- obsolete",
     ]
 
 
@@ -409,7 +387,7 @@ sources:
         ("project", "tenzir/skills@tenzir-docs", "installed"),
         ("user", "anthropics/skills@skill-creator", "installed"),
         ("user", "cloudflare/skills@wrangler", "missing"),
-        ("user", "mavam/quarto-brief@*", "installed"),
+        ("user", "mavam/quarto-brief@quarto", "installed"),
     ]
 
 
@@ -471,6 +449,39 @@ sources:
     assert payload["missing"] == [{"name": "wrangler", "source": "cloudflare/skills"}]
 
 
+def test_diff_human_output_uses_flat_install_and_remove_rows(tmp_path, capsys, monkeypatch) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  cloudflare/skills:
+    - wrangler
+    - vectorize
+""",
+    )
+    target = tmp_path / ".agents" / "skills"
+    target.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_installed_skills(options, runner):
+        assert options.directory == target
+        return (
+            InstalledSkill(name="obsolete-skill", path=target / "obsolete-skill"),
+            InstalledSkill(name="old-experiment", path=target / "old-experiment"),
+        )
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--manifest", str(path), "diff"]) == 1
+
+    assert capsys.readouterr().out.splitlines() == [
+        "+ wrangler cloudflare/skills",
+        "+ vectorize cloudflare/skills",
+        "- obsolete-skill installed",
+        "- old-experiment installed",
+    ]
+
+
 def test_apply_failure_reports_failed_skill(tmp_path, capsys, monkeypatch) -> None:
     path = write_manifest(
         tmp_path,
@@ -497,33 +508,302 @@ sources:
                 stderr="process stderr",
             )
 
-    class Spinner:
-        def __init__(self, title: str, *, suffix: str, output: str) -> None:
-            assert title == "openclaw/gogcli@gog"
-            assert suffix == ""
-            assert output == "stderr"
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args):
-            return None
-
-        async def done(self, message: str) -> None:
-            raise AssertionError(message)
-
-        async def fail(self, message: str) -> None:
-            assert message == "openclaw/gogcli@gog"
-
     monkeypatch.setattr("skeel.cli.ProcessRunner", Runner)
-    monkeypatch.setattr("skeel.io.Spinner", Spinner)
 
     assert main(["--manifest", str(path), "apply"]) == 7
 
     captured = capsys.readouterr()
+    assert "✘ gog openclaw/gogcli" in captured.err
     assert "failed to install skill: openclaw/gogcli@gog" in captured.err
     assert "process stdout" not in captured.out + captured.err
     assert "process stderr" in captured.err
+
+
+def test_run_steps_executes_parallel_commands_concurrently(tmp_path: Path) -> None:
+    class Runner:
+        def __init__(self) -> None:
+            self.active = 0
+            self.max_active = 0
+
+        async def run(self, command, **kwargs):
+            assert kwargs == {"capture_output": True}
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            await asyncio.sleep(0.01)
+            self.active -= 1
+            return ProcessResult(command=command, returncode=0)
+
+    runner = Runner()
+    runtime = Runtime(
+        manifest_path=Path("manifest.yaml"),
+        manifest_required=False,
+        options=GhOptions(directory=tmp_path),
+        runner=runner,
+        terminal=Terminal(json_output=True),
+    )
+    steps = tuple(SkillStep(label=f"skill-{index}", command=[str(index)]) for index in range(8))
+
+    results, exit_code = asyncio.run(
+        run_steps(
+            steps,
+            runtime,
+            dry_run=False,
+            action="installing",
+            dry_run_action="would install",
+            done="installed",
+        )
+    )
+
+    assert exit_code == 0
+    assert [result.label for result in results] == [step.label for step in steps]
+    assert runner.max_active > 1
+
+
+def test_run_steps_stops_launching_after_apply_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("skeel.cli.DEFAULT_PARALLELISM", 4)
+
+    class Runner:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        async def run(self, command, **kwargs):
+            assert kwargs == {"capture_output": True}
+            self.calls.append(command)
+            if command == ["fail"]:
+                await asyncio.sleep(0)
+                return ProcessResult(command=command, returncode=7, stderr="failed")
+            await asyncio.sleep(0.02)
+            return ProcessResult(command=command, returncode=0)
+
+    runner = Runner()
+    runtime = Runtime(
+        manifest_path=Path("manifest.yaml"),
+        manifest_required=False,
+        options=GhOptions(directory=tmp_path),
+        runner=runner,
+        terminal=Terminal(json_output=True),
+    )
+    steps = (
+        SkillStep(label="fail", command=["fail"]),
+        *(SkillStep(label=f"skill-{index}", command=[str(index)]) for index in range(9)),
+    )
+
+    results, exit_code = asyncio.run(
+        run_steps(
+            steps,
+            runtime,
+            dry_run=False,
+            action="installing",
+            dry_run_action="would install",
+            done="installed",
+        )
+    )
+
+    assert exit_code == 7
+    assert len(runner.calls) == 4
+    assert [result.label for result in results] == ["fail", "skill-0", "skill-1", "skill-2"]
+
+
+def test_run_steps_keeps_manual_steps_as_sequential_barriers(tmp_path: Path) -> None:
+    class Runner:
+        def __init__(self) -> None:
+            self.active: set[str] = set()
+            self.events: list[tuple[str, str, tuple[str, ...]]] = []
+
+        async def run(self, command, **kwargs):
+            assert kwargs == {"capture_output": True}
+            name = command[0]
+            self.events.append(("start", name, tuple(sorted(self.active))))
+            self.active.add(name)
+            await asyncio.sleep(0.01)
+            self.active.remove(name)
+            self.events.append(("end", name, tuple(sorted(self.active))))
+            return ProcessResult(command=command, returncode=0)
+
+    runner = Runner()
+    runtime = Runtime(
+        manifest_path=Path("manifest.yaml"),
+        manifest_required=False,
+        options=GhOptions(directory=tmp_path),
+        runner=runner,
+        terminal=Terminal(json_output=True),
+    )
+    steps = (
+        SkillStep(label="parallel-1", command=["parallel-1"]),
+        SkillStep(label="parallel-2", command=["parallel-2"]),
+        SkillStep(label="manual", command=["manual"], parallel=False),
+        SkillStep(label="parallel-3", command=["parallel-3"]),
+    )
+
+    results, exit_code = asyncio.run(
+        run_steps(
+            steps,
+            runtime,
+            dry_run=False,
+            action="installing",
+            dry_run_action="would install",
+            done="installed",
+        )
+    )
+
+    assert exit_code == 0
+    assert [result.label for result in results] == [step.label for step in steps]
+    assert ("start", "manual", ()) in runner.events
+    assert ("start", "parallel-3", ()) in runner.events
+
+    def event_index(action: str, name: str) -> int:
+        return next(
+            index
+            for index, (event_action, event_name, _active) in enumerate(runner.events)
+            if event_action == action and event_name == name
+        )
+
+    assert event_index("end", "parallel-1") < event_index("start", "manual")
+    assert event_index("end", "parallel-2") < event_index("start", "manual")
+    assert event_index("end", "manual") < event_index("start", "parallel-3")
+
+
+def test_run_steps_turns_live_progress_rows_into_final_results(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class Runner:
+        async def run(self, command, **kwargs):
+            assert kwargs == {"capture_output": True}
+            return ProcessResult(command=command, returncode=0)
+
+    class Progress:
+        def __init__(self) -> None:
+            self.events: list[tuple[str, object]] = []
+            self.next_task_id = 0
+
+        def __enter__(self):
+            self.events.append(("enter", None))
+            return self
+
+        def __exit__(self, *args):
+            self.events.append(("exit", None))
+            return None
+
+        def add_task(self, description: str, **fields) -> int:
+            self.next_task_id += 1
+            self.events.append(("add", (self.next_task_id, description, fields)))
+            return self.next_task_id
+
+        def update(self, task_id: int, **fields) -> None:
+            self.events.append(("update", (task_id, fields)))
+
+        def remove_task(self, task_id: int) -> None:
+            self.events.append(("remove", task_id))
+
+    progress = Progress()
+    terminal = Terminal(json_output=False)
+    rendered: list[str] = []
+    monkeypatch.setattr(terminal, "live_progress_enabled", lambda: True)
+    monkeypatch.setattr(terminal, "progress", lambda: progress)
+    monkeypatch.setattr(
+        terminal,
+        "render_step_result",
+        lambda result: rendered.append(result.label),
+    )
+    runtime = Runtime(
+        manifest_path=Path("manifest.yaml"),
+        manifest_required=False,
+        options=GhOptions(directory=tmp_path),
+        runner=Runner(),
+        terminal=terminal,
+    )
+    steps = (
+        SkillStep(
+            label="current",
+            command=["current"],
+            outcome=lambda _result: StepOutcome(status="current", detail="main@abc1234"),
+        ),
+        SkillStep(
+            label="skipped",
+            command=["skipped"],
+            outcome=lambda _result: StepOutcome(status="skipped"),
+        ),
+    )
+
+    results, exit_code = asyncio.run(
+        run_steps(
+            steps,
+            runtime,
+            dry_run=False,
+            action="updating",
+            dry_run_action="would update",
+            done="updated",
+            keep_going=True,
+        )
+    )
+
+    assert exit_code == 0
+    assert [result.label for result in results] == ["current", "skipped"]
+    assert ("remove", 1) not in progress.events
+    assert ("remove", 2) not in progress.events
+    assert rendered == []
+    assert (
+        "update",
+        (
+            1,
+            {
+                "completed": 1,
+                "marker": "✔︎",
+                "marker_style": "green",
+                "detail": "main@abc1234",
+                "refresh": True,
+            },
+        ),
+    ) in progress.events
+    assert (
+        "update",
+        (
+            2,
+            {
+                "completed": 1,
+                "marker": "✔︎",
+                "marker_style": "yellow",
+                "detail": "",
+                "refresh": True,
+            },
+        ),
+    ) in progress.events
+
+
+def test_version_transition_detail_highlights_old_and_new_versions() -> None:
+    text = detail_text("main@old1234 → main@new5678")
+
+    assert text.plain == "main@new5678"
+    assert str(text.style) == ""
+    assert [(span.start, span.end, str(span.style)) for span in text.spans] == [
+        (0, 12, "not bold green"),
+    ]
+
+
+def test_skill_label_styles_skill_then_source() -> None:
+    text = label_text("tenzir/skills@tenzir-docs")
+
+    assert text.plain == "tenzir-docs tenzir/skills"
+    assert str(text.style) == ""
+    assert [(span.start, span.end, str(span.style)) for span in text.spans] == [
+        (0, 11, "bold black"),
+        (11, 12, "not bold bright_black"),
+        (12, 25, "not bold cyan"),
+    ]
+
+
+def test_wildcard_skill_label_hides_star() -> None:
+    text = label_text("mavam/quarto-brief@*")
+
+    assert text.plain == "mavam/quarto-brief"
+    assert str(text.style) == ""
+    assert [(span.start, span.end, str(span.style)) for span in text.spans] == [
+        (0, 18, "bold black"),
+    ]
 
 
 def test_update_dry_run_labels_installed_skills_from_manifest(

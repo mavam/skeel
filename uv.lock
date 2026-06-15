@@ -514,6 +514,7 @@ source = { editable = "." }
 dependencies = [
     { name = "clypi" },
     { name = "pyyaml" },
+    { name = "rich" },
 ]
 
 [package.dev-dependencies]
@@ -532,6 +533,7 @@ dev = [
 requires-dist = [
     { name = "clypi", specifier = ">=1.9,<2" },
     { name = "pyyaml", specifier = ">=6.0.2" },
+    { name = "rich", specifier = ">=15,<16" },
 ]
 
 [package.metadata.requires-dev]

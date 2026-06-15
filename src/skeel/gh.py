@@ -50,6 +50,7 @@ class SkillStep:
     kind: Literal["command", "remove"] = "command"
     outcome: OutcomeFactory | None = None
     executor: StepExecutor | None = None
+    parallel: bool = True
 
 
 @dataclass(frozen=True)
@@ -90,7 +91,10 @@ class GhOptions:
 
 
 def manual_install_steps(source: SourceSpec) -> list[SkillStep]:
-    return [SkillStep(label=source.source, command=list(command)) for command in source.install]
+    return [
+        SkillStep(label=source.source, command=list(command), parallel=False)
+        for command in source.install
+    ]
 
 
 def source_skill_label(source: str, name: str) -> str:

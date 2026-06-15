@@ -25,6 +25,7 @@ classifiers = [
 dependencies = [
     "clypi>=1.9,<2",
     "PyYAML>=6.0.2",
+    "rich>=15,<16",
 ]
 
 [project.urls]

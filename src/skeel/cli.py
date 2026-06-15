@@ -6,7 +6,7 @@ import sys
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Protocol, override
+from typing import Protocol, override
 
 from clypi import ClypiConfig, ClypiFormatter, Command, Positional, arg, configure
 
@@ -23,7 +23,15 @@ from .gh import (
     source_skill_label,
     update_steps,
 )
-from .io import ProcessRunner, StepResult, Terminal
+from .io import (
+    MARKER_FAILURE,
+    MARKER_NOOP,
+    MARKER_PREVIEW,
+    MARKER_SUCCESS,
+    ProcessRunner,
+    StepResult,
+    Terminal,
+)
 from .manifest import (
     DesiredSkill,
     Manifest,
@@ -35,6 +43,8 @@ from .manifest import (
     remove_manifest_source,
     upsert_manifest_source,
 )
+
+DEFAULT_PARALLELISM = 32
 
 
 def parse_scope(value: object) -> str:
@@ -279,7 +289,8 @@ def diff_installed_skills(
             installed_skill_matches_dynamic_source(skill, source) for source in dynamic_sources
         )
     )
-    missing = tuple(desired[name] for name in sorted(set(desired) - installed_aliases))
+    missing_names = set(desired) - installed_aliases
+    missing = tuple(skill for skill in manifest.desired_skills if skill.name in missing_names)
     return SkillDiff(missing=missing, extra=tuple(sorted(extra, key=lambda skill: skill.name)))
 
 
@@ -363,14 +374,23 @@ def dynamic_source_installed(source: SourceSpec, installed: Sequence[InstalledSk
     return matching_dynamic_source_skill(source, installed) is not None
 
 
+def matching_dynamic_source_skills(
+    source: SourceSpec,
+    installed: Sequence[InstalledSkill],
+) -> tuple[InstalledSkill, ...]:
+    return tuple(
+        sorted(
+            (skill for skill in installed if installed_skill_matches_dynamic_source(skill, source)),
+            key=lambda skill: skill.basename,
+        )
+    )
+
+
 def matching_dynamic_source_skill(
     source: SourceSpec,
     installed: Sequence[InstalledSkill],
 ) -> InstalledSkill | None:
-    return next(
-        (skill for skill in installed if installed_skill_matches_dynamic_source(skill, source)),
-        None,
-    )
+    return next(iter(matching_dynamic_source_skills(source, installed)), None)
 
 
 def installed_skill_matches_dynamic_source(skill: InstalledSkill, source: SourceSpec) -> bool:
@@ -395,6 +415,7 @@ def remove_steps(extra: Sequence[InstalledSkill], options: GhOptions) -> list[Sk
                 command=["rm", "-rf", str(skill.path)],
                 remove_path=skill.path,
                 kind="remove",
+                parallel=False,
             )
         )
     return steps
@@ -431,20 +452,34 @@ def list_manifest_skills(
     installed_index = installed_skill_index(installed)
     for source in manifest.sources:
         if source.install_all:
-            match = matching_dynamic_source_skill(source, installed)
-            rows.append(
-                ListedSkill(
-                    scope=scope,
-                    manifest_path=manifest.path,
-                    name="*",
-                    source=source.source,
-                    label=source_skill_label(source.source, "*"),
-                    status="installed" if match else "missing",
-                    path=match.path if match else None,
-                    version=match.version_label if match else None,
-                    dynamic=True,
+            matches = matching_dynamic_source_skills(source, installed)
+            if matches:
+                rows.extend(
+                    ListedSkill(
+                        scope=scope,
+                        manifest_path=manifest.path,
+                        name=match.basename,
+                        source=source.source,
+                        label=source_skill_label(source.source, match.basename),
+                        status="installed",
+                        path=match.path,
+                        version=match.version_label,
+                        dynamic=True,
+                    )
+                    for match in matches
                 )
-            )
+            else:
+                rows.append(
+                    ListedSkill(
+                        scope=scope,
+                        manifest_path=manifest.path,
+                        name="*",
+                        source=source.source,
+                        label=source_skill_label(source.source, "*"),
+                        status="missing",
+                        dynamic=True,
+                    )
+                )
             continue
 
         for skill in source.skills:
@@ -541,6 +576,142 @@ def install_failure_message(step: StepResult) -> str:
     return f"failed to install skill: {step.label}"
 
 
+def step_failed(result: StepResult) -> bool:
+    return result.returncode not in (None, 0)
+
+
+def first_failure_code(results: Sequence[StepResult]) -> int:
+    for result in results:
+        if step_failed(result):
+            assert result.returncode is not None
+            return result.returncode
+    return 0
+
+
+def default_step_status(done: str) -> str | None:
+    return "installed" if done == "installed" else None
+
+
+def can_run_step_in_parallel(step: SkillStep) -> bool:
+    return step.parallel and step.kind == "command" and step.remove_path is None
+
+
+def dry_run_step_result(
+    step: SkillStep,
+    runtime: Runtime,
+    *,
+    dry_run_action: str,
+) -> StepResult:
+    if step.remove_path is not None:
+        if runtime.terminal.json_output:
+            return StepResult(
+                label=step.label,
+                command=step.command,
+                returncode=None,
+                status="removed",
+            )
+        return runtime.terminal.dry_run_step(step.label, step.command, action="would remove")
+
+    if runtime.terminal.json_output:
+        return StepResult(label=step.label, command=step.command, returncode=None)
+    return runtime.terminal.dry_run_step(step.label, step.command, action=dry_run_action)
+
+
+async def execute_skill_step(
+    step: SkillStep,
+    runtime: Runtime,
+    *,
+    done: str,
+) -> StepResult:
+    if step.remove_path is not None:
+        return runtime.terminal.execute_remove_step(step.label, step.command, step.remove_path)
+    return await runtime.terminal.execute_step(
+        step.label,
+        step.command,
+        runtime.runner,
+        outcome=step.outcome,
+        executor=step.executor,
+        default_status=default_step_status(done),
+    )
+
+
+async def run_serial_step(
+    step: SkillStep,
+    runtime: Runtime,
+    *,
+    done: str,
+) -> StepResult:
+    if runtime.terminal.json_output:
+        return await execute_skill_step(step, runtime, done=done)
+
+    if not runtime.terminal.live_progress_enabled():
+        result = await execute_skill_step(step, runtime, done=done)
+        runtime.terminal.render_step_result(result)
+        return result
+
+    with runtime.terminal.progress() as progress:
+        task_id = progress.add_task(step.label, total=1)
+        result = await execute_skill_step(step, runtime, done=done)
+        runtime.terminal.finish_progress_task(progress, task_id, result)
+    return result
+
+
+async def run_parallel_step_group(
+    steps: Sequence[SkillStep],
+    runtime: Runtime,
+    *,
+    done: str,
+    keep_going: bool,
+) -> tuple[list[StepResult], int]:
+    results: list[StepResult | None] = [None] * len(steps)
+    next_index = 0
+    index_lock = asyncio.Lock()
+    stop_launching = asyncio.Event()
+    progress = (
+        runtime.terminal.progress()
+        if not runtime.terminal.json_output and runtime.terminal.live_progress_enabled()
+        else None
+    )
+
+    async def next_step() -> tuple[int, SkillStep] | None:
+        nonlocal next_index
+        async with index_lock:
+            if stop_launching.is_set() and not keep_going:
+                return None
+            if next_index >= len(steps):
+                return None
+            index = next_index
+            next_index += 1
+            return index, steps[index]
+
+    async def worker() -> None:
+        while work := await next_step():
+            index, step = work
+            task_id = progress.add_task(step.label, total=1) if progress is not None else None
+            result = await execute_skill_step(step, runtime, done=done)
+            results[index] = result
+            if progress is not None and task_id is not None:
+                runtime.terminal.finish_progress_task(progress, task_id, result)
+            if step_failed(result) and not keep_going:
+                stop_launching.set()
+
+    async def run_workers() -> None:
+        worker_count = min(DEFAULT_PARALLELISM, len(steps))
+        await asyncio.gather(*(worker() for _ in range(worker_count)))
+
+    if progress is None:
+        await run_workers()
+    else:
+        with progress:
+            await run_workers()
+
+    ordered_results = [result for result in results if result is not None]
+    if not runtime.terminal.json_output and progress is None:
+        for result in ordered_results:
+            runtime.terminal.render_step_result(result)
+    return ordered_results, first_failure_code(ordered_results)
+
+
 async def run_steps(
     steps: Sequence[SkillStep],
     runtime: Runtime,
@@ -551,33 +722,43 @@ async def run_steps(
     done: str,
     keep_going: bool = False,
 ) -> tuple[list[StepResult], int]:
+    del action
     results: list[StepResult] = []
     exit_code = 0
-    for step in steps:
-        if step.remove_path is not None:
-            result = await runtime.terminal.remove_step(
-                step.label,
-                step.command,
-                step.remove_path,
-                dry_run=dry_run,
-            )
-        else:
-            result = await runtime.terminal.run_step(
-                step.label,
-                step.command,
-                runtime.runner,
-                action=action,
-                dry_run_action=dry_run_action,
+    index = 0
+    while index < len(steps):
+        step = steps[index]
+        if dry_run:
+            result = dry_run_step_result(step, runtime, dry_run_action=dry_run_action)
+            results.append(result)
+            index += 1
+            continue
+
+        if can_run_step_in_parallel(step):
+            end = index + 1
+            while end < len(steps) and can_run_step_in_parallel(steps[end]):
+                end += 1
+            group_results, group_exit_code = await run_parallel_step_group(
+                steps[index:end],
+                runtime,
                 done=done,
-                dry_run=dry_run,
-                outcome=step.outcome,
-                executor=step.executor,
-                default_status="installed" if done == "installed" else None,
+                keep_going=keep_going,
             )
+            results.extend(group_results)
+            if group_exit_code and not exit_code:
+                exit_code = group_exit_code
+            if group_exit_code and not keep_going:
+                break
+            index = end
+            continue
+
+        result = await run_serial_step(step, runtime, done=done)
         results.append(result)
-        if result.returncode not in (None, 0):
+        index += 1
+        if step_failed(result):
             assert result.returncode is not None
-            exit_code = result.returncode
+            if not exit_code:
+                exit_code = result.returncode
             if not keep_going:
                 break
     return results, exit_code
@@ -646,9 +827,8 @@ async def command_list(command: CommonOptions) -> int:
         if row.version:
             detail_parts.append(row.version)
         terminal.status_line(
-            "✔" if row.status == "installed" else "×",
+            MARKER_SUCCESS if row.status == "installed" else MARKER_FAILURE,
             row.label,
-            color="green" if row.status == "installed" else "red",
             detail=" ".join(detail_parts) or None,
         )
     return 0
@@ -857,15 +1037,13 @@ def add_status_line(
     *,
     manifest_path: Path,
 ) -> None:
-    color: Literal["cyan", "bright_black", "green"]
     if command.dry_run:
-        marker, color = "•", "cyan" if changed else "bright_black"
+        marker = MARKER_PREVIEW if changed else MARKER_NOOP
     else:
-        marker, color = ("✔", "green") if changed else ("•", "bright_black")
+        marker = MARKER_SUCCESS if changed else MARKER_NOOP
     terminal.status_line(
         marker,
         add_label(command.source, command.skill),
-        color=color,
         detail=str(manifest_path),
     )
 
@@ -877,15 +1055,13 @@ def remove_status_line(
     *,
     manifest_path: Path,
 ) -> None:
-    color: Literal["cyan", "bright_black", "green"]
     if command.dry_run:
-        marker, color = "•", "cyan" if changed else "bright_black"
+        marker = MARKER_PREVIEW if changed else MARKER_NOOP
     else:
-        marker, color = ("✔", "green") if changed else ("•", "bright_black")
+        marker = MARKER_SUCCESS if changed else MARKER_NOOP
     terminal.status_line(
         marker,
         add_label(command.source, command.skill),
-        color=color,
         detail=str(manifest_path),
     )
 

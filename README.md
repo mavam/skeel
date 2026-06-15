@@ -10,7 +10,7 @@ Declarative agent skill management.
 - **Inventory, dry run, and diff**: list manifest skill status, preview
   commands, and compare managed skills against what's installed locally
 - **Add, apply, and update**: edit desired state, reconcile installed skills
-  with clypi spinners, and update declared installed skills
+  with live progress, and update declared installed skills
 - **Target flags**: choose local or global scope from the CLI
 - **JSON output**: pass `--json` for one machine-readable object on stdout
 
@@ -19,7 +19,7 @@ Declarative agent skill management.
 Run `skeel` directly with `uvx`:
 
 ```sh
-uvx skeel --help
+uvx skeel
 ```
 
 ## ⚙️ Manifest
@@ -64,69 +64,152 @@ directory: project scope uses the current working directory and user scope uses
 `update` are no-ops; `add` creates the manifest. Use `--manifest` or
 `SKEEL_MANIFEST` to use a manifest from another path.
 
-## ✨ Usage
+## ✨ Commands
 
-```sh
-uvx skeel apply              # reconcile desired state
-uvx skeel apply --dry-run    # print reconciliation commands
-uvx skeel apply --reinstall  # reinstall every manifest entry
-uvx skeel apply --reinstall tenzir/skills
-uvx skeel add tenzir/skills tenzir-docs@main
-uvx skeel remove tenzir/skills tenzir-docs
-uvx skeel add mavam/quarto-brief --apply
-uvx skeel update             # update installed manifest skills
-uvx skeel list               # show manifest skill status
-uvx skeel diff               # compare desired vs installed skills
-uvx skeel path               # print manifest path
-```
-
-For scripts, use `--json`:
-
-```sh
-uvx skeel --json apply --dry-run
-uvx skeel --json add tenzir/skills tenzir-docs
-uvx skeel --json remove tenzir/skills tenzir-docs
-uvx skeel --json list
-uvx skeel --json diff
-uvx skeel --json update --dry-run
-```
-
-`list` shows every skill entry from the manifest and whether it is installed.
 By default, `list`, `diff`, `apply`, and `update` read both
 `.agents/skills.yaml` in the current working directory and
-`~/.agents/skills.yaml`; use `--scope project` or `--scope user` to operate on
-one scope.
+`~/.agents/skills.yaml`. Use `--scope project` or `--scope user` to operate on
+one scope. Human output uses the first column for the marker, the second column
+for the skill name, the third column for the source, and a muted suffix for
+versions or paths.
 
-For the default target, `diff` compares project scope against `.agents/skills`
-in the current working directory and user scope against `~/.agents/skills`.
-`apply` uses the same comparison to install missing skills and remove extra
-installed skills. Use `apply --reinstall` to run every manifest installer
-without reconciling first. Pass `apply <source> [skill]` to limit the operation
-to one manifest source; targeted apply installs missing selected entries and
-leaves unrelated installed skills alone.
+For scripts, pass `--json` to `add`, `apply`, `diff`, `list`, `path`, `remove`,
+or `update` to emit one machine-readable object on stdout.
 
-`add <source> [skill@version]` upserts desired state into the manifest. Omitting
-the skill selects all skills from the source. `remove <source> [skill]` removes
-the selected skill or the whole source when the skill is omitted. Pass `--apply`
-to either command to update the manifest and immediately reconcile installed
-skills.
+### `list`
 
-`update` checks each installed skill separately. Human output uses the leading
-marker as the status:
+Show manifest skills and whether they are installed. Sources declared without a
+skill list expand to the installed skills from that source instead of showing
+`*`.
 
-- `✔` updated the skill. When provenance is available, the muted suffix shows
-  the local version before and after the update, such as `main@oldsha →
-  main@newsha`.
-- `•` checked the skill and it is already current.
-- `◦` skipped the skill. The skill is installed and available locally, but was
-  not updated. This usually means the installed `SKILL.md` has no GitHub
-  metadata or the skill is not represented by an updatable manifest entry.
+```sh
+uvx skeel list
+```
 
-Pinned GitHub entries declared in the manifest are updated by resolving the
-configured pin and refreshing the installed files when the source changes.
+```text
+✔︎ skill-creator anthropics/skills main@3cf9a8d
+✔︎ wrangler cloudflare/skills main@45cc198
+✔︎ quarto-brief mavam/quarto-brief main@e89c555
+✔︎ tenzir-docs tenzir/skills project main@a5d04ab
+✘ gog openclaw/gogcli
+```
 
-Skills installed by `gh skill` include provenance in `SKILL.md` frontmatter, and
-future updates can track them directly.
+### `diff`
+
+Compare desired state with installed skills. `+` rows would be installed by
+`apply`; `-` rows would be removed.
+
+```sh
+uvx skeel diff
+```
+
+```text
++ wrangler cloudflare/skills
++ vectorize cloudflare/skills
+- obsolete-skill installed
+- old-experiment installed
+```
+
+### `apply`
+
+Reconcile installed skills with the manifest. Missing skills are installed and
+extra skills are removed. Use `--reinstall` to run every manifest installer
+without diffing first, or `apply <source> [skill]` to target one source.
+
+```sh
+uvx skeel apply --dry-run
+```
+
+```text
+↳ gh skill install cloudflare/skills wrangler --allow-hidden-dirs --dir .agents/skills --force
+↳ gh skill install cloudflare/skills vectorize --allow-hidden-dirs --dir .agents/skills --force
+↳ rm -rf .agents/skills/obsolete-skill
+```
+
+```sh
+uvx skeel apply
+```
+
+```text
++ wrangler cloudflare/skills
++ vectorize cloudflare/skills
+- obsolete-skill
+```
+
+### `update`
+
+Update installed skills that are represented by the manifest. Each installed
+skill is checked independently, and remote update checks run in parallel.
+
+```sh
+uvx skeel update
+```
+
+```text
+✔︎ teach mattpocock/skills main@975430f
+✔︎ tenzir-docs tenzir/skills main@f3842c1
+✔︎ clacks downstairs-dawgs/clacks
+✘ broken-skill broken/source
+```
+
+Pinned GitHub entries are updated by resolving the configured pin and
+refreshing installed files when the source changes. Skills installed by
+`gh skill` include provenance in `SKILL.md` frontmatter, so future updates can
+track them directly.
+
+### `add`
+
+Upsert a source or source/skill entry into the manifest. Omit the skill to
+select all skills from the source. Pass `--apply` to reconcile immediately.
+
+```sh
+uvx skeel add tenzir/skills tenzir-docs@main
+```
+
+```text
+✔︎ tenzir-docs tenzir/skills .agents/skills.yaml
+```
+
+```sh
+uvx skeel add mavam/quarto-brief --dry-run
+```
+
+```text
+↳ mavam/quarto-brief .agents/skills.yaml
+```
+
+### `remove`
+
+Remove a source or source/skill entry from the manifest. Omit the skill to
+remove the whole source. Pass `--apply` to reconcile immediately.
+
+```sh
+uvx skeel remove tenzir/skills tenzir-docs
+```
+
+```text
+✔︎ tenzir-docs tenzir/skills .agents/skills.yaml
+```
+
+```sh
+uvx skeel remove mavam/quarto-brief --dry-run
+```
+
+```text
+↳ mavam/quarto-brief .agents/skills.yaml
+```
+
+### `path`
+
+Print the manifest path that `skeel` would use for the selected scope.
+
+```sh
+uvx skeel path
+```
+
+```text
+/Users/alice/project/.agents/skills.yaml
+```
 
 ## 🧰 GitHub Skill Policy
 

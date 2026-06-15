@@ -1,10 +1,18 @@
 import json
+import threading
+import time
 from pathlib import Path
 
 import yaml
 
-from skeel.fast_install import DiscoveredSkill, install_skill, select_skill
-from skeel.manifest import SkillSpec
+from skeel.fast_install import (
+    DiscoveredSkill,
+    FastInstallSession,
+    ResolvedRef,
+    install_skill,
+    select_skill,
+)
+from skeel.manifest import SkillSpec, SourceSpec
 
 
 def test_install_skill_copies_files_and_injects_github_metadata(
@@ -73,3 +81,94 @@ def test_select_skill_matches_hidden_and_namespaced_paths(tmp_path: Path) -> Non
         )
         == namespaced
     )
+
+
+def test_fast_install_session_reuses_remote_cache_concurrently(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source_root = tmp_path / "source"
+    for name in ("skill-a", "skill-b"):
+        skill_dir = source_root / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(f"# {name}\n")
+
+    call_counts = {
+        "resolve_ref": 0,
+        "download_archive": 0,
+        "fetch_tree_shas": 0,
+    }
+    call_lock = threading.Lock()
+    installed: list[str] = []
+
+    def count_call(name: str) -> None:
+        with call_lock:
+            call_counts[name] += 1
+        time.sleep(0.01)
+
+    def fake_resolve_ref(source: str, pin: str) -> ResolvedRef:
+        assert source == "owner/repo"
+        assert pin == "main"
+        count_call("resolve_ref")
+        return ResolvedRef(ref="refs/heads/main", commit_sha="commit123")
+
+    def fake_download_archive(source: str, commit_sha: str, directory: Path) -> Path:
+        assert source == "owner/repo"
+        assert commit_sha == "commit123"
+        assert directory.exists()
+        count_call("download_archive")
+        return source_root
+
+    def fake_fetch_tree_shas(source: str, commit_sha: str) -> dict[str, str]:
+        assert source == "owner/repo"
+        assert commit_sha == "commit123"
+        count_call("fetch_tree_shas")
+        return {"skill-a": "tree-a", "skill-b": "tree-b"}
+
+    def fake_install_skill(**kwargs) -> None:
+        with call_lock:
+            installed.append(kwargs["skill"].name)
+
+    monkeypatch.setattr("skeel.fast_install.resolve_ref", fake_resolve_ref)
+    monkeypatch.setattr("skeel.fast_install.download_archive", fake_download_archive)
+    monkeypatch.setattr("skeel.fast_install.fetch_tree_shas", fake_fetch_tree_shas)
+    monkeypatch.setattr("skeel.fast_install.install_skill", fake_install_skill)
+
+    session = FastInstallSession("owner/repo")
+    source = SourceSpec(
+        source="owner/repo",
+        skills=(
+            SkillSpec(spec="skill-a", name="skill-a", pin="main"),
+            SkillSpec(spec="skill-b", name="skill-b", pin="main"),
+        ),
+        pin="main",
+    )
+    errors: list[BaseException] = []
+
+    def run_install(skill: SkillSpec) -> None:
+        try:
+            session.install(source, skill, tmp_path / "target")
+        except BaseException as error:
+            with call_lock:
+                errors.append(error)
+
+    threads = [
+        threading.Thread(
+            target=run_install,
+            args=(skill,),
+        )
+        for skill in source.skills
+    ]
+
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert call_counts == {
+        "resolve_ref": 1,
+        "download_archive": 1,
+        "fetch_tree_shas": 1,
+    }
+    assert sorted(installed) == ["skill-a", "skill-b"]
