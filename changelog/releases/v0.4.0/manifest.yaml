@@ -1,0 +1,9 @@
+created: 2026-06-15
+title: Parallel skill operations and clearer output
+intro: >-
+  This release improves skill synchronization for large manifests by running independent
+  remote operations in parallel. It also makes command output clearer and more consistent
+  across apply, update, list, and diff workflows.
+source:
+  mode: sync-stable-queue
+  previous_stable: v0.3.0
