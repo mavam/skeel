@@ -8,7 +8,7 @@ pre-push:
     changelog-validate:
       run: uvx tenzir-ship validate
     actionlint:
-      run: actionlint
+      run: if command -v actionlint >/dev/null; then actionlint; fi
 
 fix:
   parallel: false

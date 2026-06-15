@@ -62,6 +62,10 @@ jobs:
         if: matrix.task == 'quality'
         run: uv run tenzir-ship validate
 
+      - name: Run actionlint
+        if: matrix.task == 'quality'
+        uses: raven-actions/actionlint@v2
+
       - name: Run tests
         if: matrix.task == 'tests'
         run: uv run pytest --durations=10
