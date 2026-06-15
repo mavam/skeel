@@ -9,7 +9,7 @@ import sys
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol
 
 from rich.console import Console, RenderableType
 from rich.progress import Progress, ProgressColumn, Task, TaskID
@@ -19,6 +19,7 @@ from rich.text import Text
 Command = list[str]
 StepExecutor = Callable[[], Awaitable["ProcessResult"]]
 TerminalColorSystem = Literal["standard"]
+DEFAULT_PARALLELISM = 32
 
 
 @dataclass(frozen=True)
@@ -40,8 +41,6 @@ STYLE_REPO = "not bold cyan"
 STYLE_SEPARATOR = "not bold bright_black"
 STYLE_SKILL = "bold black"
 STYLE_DETAIL = "not bold bright_black"
-STYLE_OLD_VERSION = "not bold bright_black"
-STYLE_VERSION_ARROW = "not bold bright_black"
 STYLE_NEW_VERSION = "not bold green"
 STYLE_WARNING = "yellow bold"
 
@@ -86,6 +85,37 @@ class StepResult:
         if self.stderr:
             payload["stderr"] = self.stderr
         return payload
+
+
+class SkillStepLike(Protocol):
+    @property
+    def label(self) -> str: ...
+
+    @property
+    def command(self) -> Command: ...
+
+    @property
+    def remove_path(self) -> Path | None: ...
+
+    @property
+    def kind(self) -> str: ...
+
+    @property
+    def outcome(self) -> Callable[[ProcessResult], StepOutcome] | None: ...
+
+    @property
+    def executor(self) -> StepExecutor | None: ...
+
+    @property
+    def parallel(self) -> bool: ...
+
+
+class StepRuntime(Protocol):
+    @property
+    def runner(self) -> ProcessRunner: ...
+
+    @property
+    def terminal(self) -> Terminal: ...
 
 
 def quote_command(command: Sequence[str]) -> str:
@@ -382,88 +412,6 @@ class Terminal:
             refresh=True,
         )
 
-    async def run_step(
-        self,
-        label: str,
-        command: Command,
-        runner: ProcessRunner,
-        *,
-        action: str,
-        dry_run_action: str,
-        done: str,
-        dry_run: bool = False,
-        outcome: Callable[[ProcessResult], StepOutcome] | None = None,
-        executor: StepExecutor | None = None,
-        default_status: str | None = None,
-    ) -> StepResult:
-        del action, done
-        if dry_run:
-            if self.json_output:
-                return StepResult(label=label, command=command, returncode=None)
-            return self.dry_run_step(label, command, action=dry_run_action)
-
-        if self.json_output:
-            return await self.execute_step(
-                label,
-                command,
-                runner,
-                outcome=outcome,
-                executor=executor,
-                default_status=default_status,
-            )
-
-        if not self.live_progress_enabled():
-            result = await self.execute_step(
-                label,
-                command,
-                runner,
-                outcome=outcome,
-                executor=executor,
-                default_status=default_status,
-            )
-            self.render_step_result(result)
-            return result
-
-        with self.progress() as progress:
-            task_id = progress.add_task(label, total=1)
-            result = await self.execute_step(
-                label,
-                command,
-                runner,
-                outcome=outcome,
-                executor=executor,
-                default_status=default_status,
-            )
-            self.finish_progress_task(progress, task_id, result)
-        return result
-
-    async def remove_step(
-        self,
-        label: str,
-        command: Command,
-        path: Path,
-        *,
-        dry_run: bool = False,
-    ) -> StepResult:
-        if dry_run:
-            if self.json_output:
-                return StepResult(label=label, command=command, returncode=None, status="removed")
-            return self.dry_run_step(label, command, action="would remove")
-
-        if self.json_output:
-            return self.execute_remove_step(label, command, path)
-
-        if not self.live_progress_enabled():
-            result = self.execute_remove_step(label, command, path)
-            self.render_step_result(result)
-            return result
-
-        with self.progress() as progress:
-            task_id = progress.add_task(label, total=1)
-            result = self.execute_remove_step(label, command, path)
-            self.finish_progress_task(progress, task_id, result)
-        return result
-
     def _remove_path(self, path: Path) -> int:
         try:
             if path.is_dir():
@@ -474,3 +422,189 @@ class Terminal:
             self.error(str(error))
             return 1
         return 0
+
+
+def failed_steps(steps: Sequence[StepResult]) -> list[StepResult]:
+    return [step for step in steps if step.returncode not in (None, 0)]
+
+
+def step_failed(result: StepResult) -> bool:
+    return result.returncode not in (None, 0)
+
+
+def first_failure_code(results: Sequence[StepResult]) -> int:
+    for result in results:
+        if step_failed(result):
+            assert result.returncode is not None
+            return result.returncode
+    return 0
+
+
+def can_run_step_in_parallel(step: SkillStepLike) -> bool:
+    return step.parallel and step.kind == "command" and step.remove_path is None
+
+
+def dry_run_step_result(
+    step: SkillStepLike,
+    runtime: StepRuntime,
+    *,
+    dry_run_action: str,
+) -> StepResult:
+    if step.remove_path is not None:
+        if runtime.terminal.json_output:
+            return StepResult(
+                label=step.label,
+                command=step.command,
+                returncode=None,
+                status="removed",
+            )
+        return runtime.terminal.dry_run_step(step.label, step.command, action="would remove")
+
+    if runtime.terminal.json_output:
+        return StepResult(label=step.label, command=step.command, returncode=None)
+    return runtime.terminal.dry_run_step(step.label, step.command, action=dry_run_action)
+
+
+async def execute_skill_step(
+    step: SkillStepLike,
+    runtime: StepRuntime,
+    *,
+    default_status: str | None,
+) -> StepResult:
+    if step.remove_path is not None:
+        return runtime.terminal.execute_remove_step(step.label, step.command, step.remove_path)
+    return await runtime.terminal.execute_step(
+        step.label,
+        step.command,
+        runtime.runner,
+        outcome=step.outcome,
+        executor=step.executor,
+        default_status=default_status,
+    )
+
+
+async def run_serial_step(
+    step: SkillStepLike,
+    runtime: StepRuntime,
+    *,
+    default_status: str | None,
+) -> StepResult:
+    if runtime.terminal.json_output:
+        return await execute_skill_step(step, runtime, default_status=default_status)
+
+    if not runtime.terminal.live_progress_enabled():
+        result = await execute_skill_step(step, runtime, default_status=default_status)
+        runtime.terminal.render_step_result(result)
+        return result
+
+    with runtime.terminal.progress() as progress:
+        task_id = progress.add_task(step.label, total=1)
+        result = await execute_skill_step(step, runtime, default_status=default_status)
+        runtime.terminal.finish_progress_task(progress, task_id, result)
+    return result
+
+
+async def run_parallel_step_group(
+    steps: Sequence[SkillStepLike],
+    runtime: StepRuntime,
+    *,
+    default_status: str | None,
+    keep_going: bool,
+) -> tuple[list[StepResult], int]:
+    results: list[StepResult | None] = [None] * len(steps)
+    next_index = 0
+    index_lock = asyncio.Lock()
+    stop_launching = asyncio.Event()
+    progress = (
+        runtime.terminal.progress()
+        if not runtime.terminal.json_output and runtime.terminal.live_progress_enabled()
+        else None
+    )
+
+    async def next_step() -> tuple[int, SkillStepLike] | None:
+        nonlocal next_index
+        async with index_lock:
+            if stop_launching.is_set() and not keep_going:
+                return None
+            if next_index >= len(steps):
+                return None
+            index = next_index
+            next_index += 1
+            return index, steps[index]
+
+    async def worker() -> None:
+        while work := await next_step():
+            index, step = work
+            task_id = progress.add_task(step.label, total=1) if progress is not None else None
+            result = await execute_skill_step(step, runtime, default_status=default_status)
+            results[index] = result
+            if progress is not None and task_id is not None:
+                runtime.terminal.finish_progress_task(progress, task_id, result)
+            if step_failed(result) and not keep_going:
+                stop_launching.set()
+
+    async def run_workers() -> None:
+        worker_count = min(DEFAULT_PARALLELISM, len(steps))
+        await asyncio.gather(*(worker() for _ in range(worker_count)))
+
+    if progress is None:
+        await run_workers()
+    else:
+        with progress:
+            await run_workers()
+
+    ordered_results = [result for result in results if result is not None]
+    if not runtime.terminal.json_output and progress is None:
+        for result in ordered_results:
+            runtime.terminal.render_step_result(result)
+    return ordered_results, first_failure_code(ordered_results)
+
+
+async def run_steps(
+    steps: Sequence[SkillStepLike],
+    runtime: StepRuntime,
+    *,
+    dry_run: bool,
+    dry_run_action: str,
+    default_status: str | None = None,
+    keep_going: bool = False,
+) -> tuple[list[StepResult], int]:
+    results: list[StepResult] = []
+    exit_code = 0
+    index = 0
+    while index < len(steps):
+        step = steps[index]
+        if dry_run:
+            result = dry_run_step_result(step, runtime, dry_run_action=dry_run_action)
+            results.append(result)
+            index += 1
+            continue
+
+        if can_run_step_in_parallel(step):
+            end = index + 1
+            while end < len(steps) and can_run_step_in_parallel(steps[end]):
+                end += 1
+            group_results, group_exit_code = await run_parallel_step_group(
+                steps[index:end],
+                runtime,
+                default_status=default_status,
+                keep_going=keep_going,
+            )
+            results.extend(group_results)
+            if group_exit_code and not exit_code:
+                exit_code = group_exit_code
+            if group_exit_code and not keep_going:
+                break
+            index = end
+            continue
+
+        result = await run_serial_step(step, runtime, default_status=default_status)
+        results.append(result)
+        index += 1
+        if step_failed(result):
+            assert result.returncode is not None
+            if not exit_code:
+                exit_code = result.returncode
+            if not keep_going:
+                break
+    return results, exit_code

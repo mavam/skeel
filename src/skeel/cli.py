@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
-from collections.abc import Iterator, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, override
@@ -13,13 +13,8 @@ from clypi import ClypiConfig, ClypiFormatter, Command, Positional, arg, configu
 from . import __version__
 from .gh import (
     GhOptions,
-    InstalledSkill,
     SkillStep,
-    desired_aliases,
-    desired_label,
-    install_steps,
     installed_skills,
-    manual_install_steps,
     source_skill_label,
     update_steps,
 )
@@ -32,20 +27,25 @@ from .io import (
     ProcessRunner,
     StepResult,
     Terminal,
+    failed_steps,
+    run_steps,
 )
 from .manifest import (
-    DesiredSkill,
     Manifest,
-    SkillSpec,
-    SourceSpec,
     load_manifest,
     manifest_path,
     parse_skill,
     remove_manifest_source,
     upsert_manifest_source,
 )
-
-DEFAULT_PARALLELISM = 32
+from .reconcile import (
+    ApplySelector,
+    ListedSkill,
+    SkillDiff,
+    apply_plan,
+    diff_installed_skills,
+    list_manifest_skills,
+)
 
 
 def parse_scope(value: object) -> str:
@@ -123,12 +123,6 @@ class RemoveOptions(CommonOptions, Protocol):
 
 
 @dataclass(frozen=True)
-class ApplySelector:
-    source: str
-    skill: str | None = None
-
-
-@dataclass(frozen=True)
 class Runtime:
     manifest_path: Path
     manifest_required: bool
@@ -152,46 +146,6 @@ class ManifestSelection:
     @property
     def found_manifest(self) -> bool:
         return bool(self.contexts)
-
-
-@dataclass(frozen=True)
-class SkillDiff:
-    missing: tuple[DesiredSkill, ...]
-    extra: tuple[InstalledSkill, ...]
-
-    @property
-    def in_sync(self) -> bool:
-        return not self.missing and not self.extra
-
-
-@dataclass(frozen=True)
-class ListedSkill:
-    scope: str
-    manifest_path: Path
-    name: str
-    source: str
-    label: str
-    status: str
-    path: Path | None = None
-    version: str | None = None
-    dynamic: bool = False
-
-    def json(self) -> dict[str, object]:
-        payload: dict[str, object] = {
-            "scope": self.scope,
-            "manifest": str(self.manifest_path),
-            "name": self.name,
-            "source": self.source,
-            "label": self.label,
-            "status": self.status,
-        }
-        if self.path is not None:
-            payload["path"] = str(self.path)
-        if self.version:
-            payload["version"] = self.version
-        if self.dynamic:
-            payload["dynamic"] = True
-        return payload
 
 
 def build_runtime(command: CommonOptions) -> Runtime:
@@ -243,183 +197,12 @@ def select_manifest_contexts(command: CommonOptions) -> ManifestSelection:
     return ManifestSelection(contexts=tuple(contexts), missing_paths=tuple(missing_paths))
 
 
-def installed_name_aliases(names: set[str]) -> set[str]:
-    return names | {Path(name).name for name in names}
-
-
-def installed_skill_index(installed: Sequence[InstalledSkill]) -> dict[str, InstalledSkill]:
-    index: dict[str, InstalledSkill] = {}
-    for skill in installed:
-        for alias in {skill.name, skill.basename, skill.path.name}:
-            index.setdefault(alias, skill)
-    return index
-
-
-def matching_installed_skill(
-    desired: DesiredSkill,
-    index: dict[str, InstalledSkill],
-) -> InstalledSkill | None:
-    for alias in desired_aliases(desired):
-        if skill := index.get(alias):
-            return skill
-    return None
-
-
 async def diff_skills(
     manifest: Manifest,
     options: GhOptions,
     runner: ProcessRunner,
 ) -> SkillDiff:
     return diff_installed_skills(manifest, await installed_skills(options, runner))
-
-
-def diff_installed_skills(
-    manifest: Manifest,
-    installed: Sequence[InstalledSkill],
-) -> SkillDiff:
-    desired = {skill.name: skill for skill in manifest.desired_skills}
-    installed_names = {skill.name for skill in installed}
-    installed_aliases = installed_name_aliases(installed_names)
-    dynamic_sources = tuple(source for source in manifest.sources if source.install_all)
-    extra = tuple(
-        skill
-        for skill in installed
-        if skill.name not in desired
-        and skill.basename not in desired
-        and not any(
-            installed_skill_matches_dynamic_source(skill, source) for source in dynamic_sources
-        )
-    )
-    missing_names = set(desired) - installed_aliases
-    missing = tuple(skill for skill in manifest.desired_skills if skill.name in missing_names)
-    return SkillDiff(missing=missing, extra=tuple(sorted(extra, key=lambda skill: skill.name)))
-
-
-def filter_manifest(
-    manifest: Manifest,
-    selector: ApplySelector | None,
-) -> Manifest:
-    if selector is None:
-        return manifest
-
-    sources: list[SourceSpec] = []
-    for source in manifest.sources:
-        if source.source != selector.source:
-            continue
-        if filtered_source := filter_source(source, selector.skill):
-            sources.append(filtered_source)
-    return Manifest(path=manifest.path, sources=tuple(sources))
-
-
-def filter_source(source: SourceSpec, skill: str | None) -> SourceSpec | None:
-    if skill is None:
-        return source
-
-    selected = parse_skill(skill, source_pin=source.pin if "@" not in skill else None)
-    if source.install_all:
-        return SourceSpec(
-            source=source.source,
-            skills=(selected,),
-            pin=source.pin,
-        )
-
-    skills = tuple(
-        current for current in source.skills if skill_matches_selector(current, selected)
-    )
-    if not skills:
-        return None
-    return SourceSpec(
-        source=source.source,
-        skills=skills,
-        pin=source.pin,
-        install=source.install,
-    )
-
-
-def skill_matches_selector(skill: SkillSpec, selected: SkillSpec) -> bool:
-    return skill.name == selected.name or skill.spec == selected.spec
-
-
-def iter_install_plan(
-    manifest: Manifest,
-    options: GhOptions,
-    *,
-    missing: set[str] | None = None,
-    installed: Sequence[InstalledSkill] = (),
-) -> Iterator[SkillStep]:
-    for source in manifest.sources:
-        if missing is not None and not source.install_all and not source.install:
-            skills = tuple(skill for skill in source.skills if skill.name in missing)
-            if not skills:
-                continue
-            source = SourceSpec(
-                source=source.source,
-                skills=skills,
-                pin=source.pin,
-            )
-        if (
-            missing is not None
-            and source.install_all
-            and dynamic_source_installed(source, installed)
-        ):
-            continue
-        if source.install:
-            if missing is not None and not any(skill.name in missing for skill in source.skills):
-                continue
-            yield from manual_install_steps(source)
-            continue
-        yield from install_steps(source, options)
-
-
-def dynamic_source_installed(source: SourceSpec, installed: Sequence[InstalledSkill]) -> bool:
-    return matching_dynamic_source_skill(source, installed) is not None
-
-
-def matching_dynamic_source_skills(
-    source: SourceSpec,
-    installed: Sequence[InstalledSkill],
-) -> tuple[InstalledSkill, ...]:
-    return tuple(
-        sorted(
-            (skill for skill in installed if installed_skill_matches_dynamic_source(skill, source)),
-            key=lambda skill: skill.basename,
-        )
-    )
-
-
-def matching_dynamic_source_skill(
-    source: SourceSpec,
-    installed: Sequence[InstalledSkill],
-) -> InstalledSkill | None:
-    return next(iter(matching_dynamic_source_skills(source, installed)), None)
-
-
-def installed_skill_matches_dynamic_source(skill: InstalledSkill, source: SourceSpec) -> bool:
-    repo_name = Path(source.source).name
-    return (
-        skill.github_source == source.source
-        or skill.basename == repo_name
-        or skill.path.name == repo_name
-    )
-
-
-def remove_steps(extra: Sequence[InstalledSkill], options: GhOptions) -> list[SkillStep]:
-    root = options.directory.resolve()
-    steps: list[SkillStep] = []
-    for skill in extra:
-        path = skill.path.resolve()
-        if path != root and not path.is_relative_to(root):
-            raise ValueError(f"refusing to remove skill outside target directory: {skill.path}")
-        steps.append(
-            SkillStep(
-                label=skill.label,
-                command=["rm", "-rf", str(skill.path)],
-                remove_path=skill.path,
-                kind="remove",
-                parallel=False,
-            )
-        )
-    return steps
 
 
 def diff_json(diff: SkillDiff) -> dict[str, object]:
@@ -441,68 +224,6 @@ def diff_json(diff: SkillDiff) -> dict[str, object]:
         ],
         "in_sync": diff.in_sync,
     }
-
-
-def list_manifest_skills(
-    manifest: Manifest,
-    installed: Sequence[InstalledSkill],
-    *,
-    scope: str,
-) -> tuple[ListedSkill, ...]:
-    rows: list[ListedSkill] = []
-    installed_index = installed_skill_index(installed)
-    for source in manifest.sources:
-        if source.install_all:
-            matches = matching_dynamic_source_skills(source, installed)
-            if matches:
-                rows.extend(
-                    ListedSkill(
-                        scope=scope,
-                        manifest_path=manifest.path,
-                        name=match.basename,
-                        source=source.source,
-                        label=source_skill_label(source.source, match.basename),
-                        status="installed",
-                        path=match.path,
-                        version=match.version_label,
-                        dynamic=True,
-                    )
-                    for match in matches
-                )
-            else:
-                rows.append(
-                    ListedSkill(
-                        scope=scope,
-                        manifest_path=manifest.path,
-                        name="*",
-                        source=source.source,
-                        label=source_skill_label(source.source, "*"),
-                        status="missing",
-                        dynamic=True,
-                    )
-                )
-            continue
-
-        for skill in source.skills:
-            desired = DesiredSkill(
-                name=skill.name,
-                spec=skill.spec,
-                source=source.source,
-            )
-            match = matching_installed_skill(desired, installed_index)
-            rows.append(
-                ListedSkill(
-                    scope=scope,
-                    manifest_path=manifest.path,
-                    name=desired.name,
-                    source=desired.source,
-                    label=desired_label(desired),
-                    status="installed" if match else "missing",
-                    path=match.path if match else None,
-                    version=match.version_label if match else None,
-                )
-            )
-    return tuple(rows)
 
 
 def list_json(rows: Sequence[ListedSkill]) -> dict[str, object]:
@@ -569,200 +290,8 @@ def remove_json(
     return payload
 
 
-def failed_steps(steps: Sequence[StepResult]) -> list[StepResult]:
-    return [step for step in steps if step.returncode not in (None, 0)]
-
-
 def install_failure_message(step: StepResult) -> str:
     return f"failed to install skill: {step.label}"
-
-
-def step_failed(result: StepResult) -> bool:
-    return result.returncode not in (None, 0)
-
-
-def first_failure_code(results: Sequence[StepResult]) -> int:
-    for result in results:
-        if step_failed(result):
-            assert result.returncode is not None
-            return result.returncode
-    return 0
-
-
-def default_step_status(done: str) -> str | None:
-    return "installed" if done == "installed" else None
-
-
-def can_run_step_in_parallel(step: SkillStep) -> bool:
-    return step.parallel and step.kind == "command" and step.remove_path is None
-
-
-def dry_run_step_result(
-    step: SkillStep,
-    runtime: Runtime,
-    *,
-    dry_run_action: str,
-) -> StepResult:
-    if step.remove_path is not None:
-        if runtime.terminal.json_output:
-            return StepResult(
-                label=step.label,
-                command=step.command,
-                returncode=None,
-                status="removed",
-            )
-        return runtime.terminal.dry_run_step(step.label, step.command, action="would remove")
-
-    if runtime.terminal.json_output:
-        return StepResult(label=step.label, command=step.command, returncode=None)
-    return runtime.terminal.dry_run_step(step.label, step.command, action=dry_run_action)
-
-
-async def execute_skill_step(
-    step: SkillStep,
-    runtime: Runtime,
-    *,
-    done: str,
-) -> StepResult:
-    if step.remove_path is not None:
-        return runtime.terminal.execute_remove_step(step.label, step.command, step.remove_path)
-    return await runtime.terminal.execute_step(
-        step.label,
-        step.command,
-        runtime.runner,
-        outcome=step.outcome,
-        executor=step.executor,
-        default_status=default_step_status(done),
-    )
-
-
-async def run_serial_step(
-    step: SkillStep,
-    runtime: Runtime,
-    *,
-    done: str,
-) -> StepResult:
-    if runtime.terminal.json_output:
-        return await execute_skill_step(step, runtime, done=done)
-
-    if not runtime.terminal.live_progress_enabled():
-        result = await execute_skill_step(step, runtime, done=done)
-        runtime.terminal.render_step_result(result)
-        return result
-
-    with runtime.terminal.progress() as progress:
-        task_id = progress.add_task(step.label, total=1)
-        result = await execute_skill_step(step, runtime, done=done)
-        runtime.terminal.finish_progress_task(progress, task_id, result)
-    return result
-
-
-async def run_parallel_step_group(
-    steps: Sequence[SkillStep],
-    runtime: Runtime,
-    *,
-    done: str,
-    keep_going: bool,
-) -> tuple[list[StepResult], int]:
-    results: list[StepResult | None] = [None] * len(steps)
-    next_index = 0
-    index_lock = asyncio.Lock()
-    stop_launching = asyncio.Event()
-    progress = (
-        runtime.terminal.progress()
-        if not runtime.terminal.json_output and runtime.terminal.live_progress_enabled()
-        else None
-    )
-
-    async def next_step() -> tuple[int, SkillStep] | None:
-        nonlocal next_index
-        async with index_lock:
-            if stop_launching.is_set() and not keep_going:
-                return None
-            if next_index >= len(steps):
-                return None
-            index = next_index
-            next_index += 1
-            return index, steps[index]
-
-    async def worker() -> None:
-        while work := await next_step():
-            index, step = work
-            task_id = progress.add_task(step.label, total=1) if progress is not None else None
-            result = await execute_skill_step(step, runtime, done=done)
-            results[index] = result
-            if progress is not None and task_id is not None:
-                runtime.terminal.finish_progress_task(progress, task_id, result)
-            if step_failed(result) and not keep_going:
-                stop_launching.set()
-
-    async def run_workers() -> None:
-        worker_count = min(DEFAULT_PARALLELISM, len(steps))
-        await asyncio.gather(*(worker() for _ in range(worker_count)))
-
-    if progress is None:
-        await run_workers()
-    else:
-        with progress:
-            await run_workers()
-
-    ordered_results = [result for result in results if result is not None]
-    if not runtime.terminal.json_output and progress is None:
-        for result in ordered_results:
-            runtime.terminal.render_step_result(result)
-    return ordered_results, first_failure_code(ordered_results)
-
-
-async def run_steps(
-    steps: Sequence[SkillStep],
-    runtime: Runtime,
-    *,
-    dry_run: bool,
-    action: str,
-    dry_run_action: str,
-    done: str,
-    keep_going: bool = False,
-) -> tuple[list[StepResult], int]:
-    del action
-    results: list[StepResult] = []
-    exit_code = 0
-    index = 0
-    while index < len(steps):
-        step = steps[index]
-        if dry_run:
-            result = dry_run_step_result(step, runtime, dry_run_action=dry_run_action)
-            results.append(result)
-            index += 1
-            continue
-
-        if can_run_step_in_parallel(step):
-            end = index + 1
-            while end < len(steps) and can_run_step_in_parallel(steps[end]):
-                end += 1
-            group_results, group_exit_code = await run_parallel_step_group(
-                steps[index:end],
-                runtime,
-                done=done,
-                keep_going=keep_going,
-            )
-            results.extend(group_results)
-            if group_exit_code and not exit_code:
-                exit_code = group_exit_code
-            if group_exit_code and not keep_going:
-                break
-            index = end
-            continue
-
-        result = await run_serial_step(step, runtime, done=done)
-        results.append(result)
-        index += 1
-        if step_failed(result):
-            assert result.returncode is not None
-            if not exit_code:
-                exit_code = result.returncode
-            if not keep_going:
-                break
-    return results, exit_code
 
 
 async def command_path(command: CommonOptions) -> int:
@@ -888,23 +417,14 @@ async def apply_steps(
     reinstall: bool = False,
     selector: ApplySelector | None = None,
 ) -> list[SkillStep]:
-    selected_manifest = filter_manifest(manifest, selector)
-    if reinstall:
-        return list(iter_install_plan(selected_manifest, runtime.options))
-
-    installed = await installed_skills(runtime.options, runtime.runner)
-    diff = diff_installed_skills(selected_manifest, installed)
-    steps = [
-        *iter_install_plan(
-            selected_manifest,
-            runtime.options,
-            missing={skill.name for skill in diff.missing},
-            installed=installed,
-        ),
-    ]
-    if selector is None:
-        steps.extend(remove_steps(diff.extra, runtime.options))
-    return steps
+    installed = () if reinstall else await installed_skills(runtime.options, runtime.runner)
+    return apply_plan(
+        manifest,
+        runtime.options,
+        installed,
+        reinstall=reinstall,
+        selector=selector,
+    )
 
 
 def apply_selector(command: ApplyOptions) -> ApplySelector | None:
@@ -922,9 +442,8 @@ async def run_apply_steps(
         steps,
         runtime,
         dry_run=command.dry_run,
-        action="installing",
         dry_run_action="would install",
-        done="installed",
+        default_status="installed",
     )
 
 
@@ -1087,9 +606,7 @@ async def command_update(command: CommonOptions) -> int:
             steps,
             context.runtime,
             dry_run=command.dry_run,
-            action="updating",
             dry_run_action="would update",
-            done="updated",
             keep_going=True,
         )
         results.extend(scope_results)

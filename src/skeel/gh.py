@@ -245,14 +245,6 @@ async def installed_skills(
     return tuple(skills)
 
 
-async def installed_skill_names(options: GhOptions, runner: ProcessRunner) -> set[str]:
-    return {skill.name for skill in await installed_skills(options, runner)}
-
-
-def desired_skill_names(manifest: Manifest) -> set[str]:
-    return manifest.desired_skill_names
-
-
 def desired_labels(manifest: Manifest) -> dict[str, str]:
     labels: dict[str, str] = {}
     for skill in manifest.desired_skills:
