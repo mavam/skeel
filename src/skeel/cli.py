@@ -779,11 +779,6 @@ class Skeel(Command):
     version: bool = arg(False, help="Print the skeel version and exit.")
     subcommand: PathCommand | Diff | ListCommand | Apply | Add | Remove | Update | None = None
 
-    @override
-    @classmethod
-    def epilog(cls) -> str | None:
-        return f"skeel {__version__}"
-
     async def execute(self) -> int:
         command = self.subcommand
         if command is None:
@@ -808,7 +803,7 @@ def main(argv: list[str] | None = None) -> int:
             Skeel.print_help()
             return 0  # type: ignore[unreachable]
         if args == ["--version"]:
-            print(f"skeel {__version__}")
+            print(__version__)
             return 0
         command = Skeel.parse(args)
         return asyncio.run(command.execute())

@@ -29,12 +29,13 @@ def test_no_arguments_prints_help(capsys) -> None:
     assert "apply" in output
     assert "add" in output
     assert "remove" in output
+    assert f"skeel {__version__}" not in output
 
 
 def test_version_flag_prints_version(capsys) -> None:
     assert main(["--version"]) == 0
 
-    assert capsys.readouterr().out.strip() == f"skeel {__version__}"
+    assert capsys.readouterr().out.strip() == __version__
 
 
 def test_apply_without_default_manifest_is_noop(tmp_path, capsys, monkeypatch) -> None:
