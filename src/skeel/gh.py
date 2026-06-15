@@ -375,6 +375,8 @@ def version_transition(before: SkillProvenance, after: SkillProvenance) -> str |
     after_label = after.version_label
     if not before_label and not after_label:
         return None
+    if before_label == after_label:
+        return before_label
     return f"{before_label or 'unknown'} → {after_label or 'unknown'}"
 
 

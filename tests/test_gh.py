@@ -282,7 +282,7 @@ name: tenzir-asim
     outcome = fast_update_outcome(skill)(ProcessResult(command=[], returncode=0))
 
     assert outcome.status == "current"
-    assert outcome.detail == "main@old1234 → main@old1234"
+    assert outcome.detail == "main@old1234"
 
 
 def test_fast_update_outcome_marks_changed_pinned_skill_updated(tmp_path: Path) -> None:
@@ -329,3 +329,11 @@ def test_missing_provenance_has_no_version_transition() -> None:
     from skeel.gh import version_transition
 
     assert version_transition(SkillProvenance(), SkillProvenance()) is None
+
+
+def test_version_transition_omits_arrow_for_unchanged_versions() -> None:
+    from skeel.gh import version_transition
+
+    provenance = SkillProvenance(ref="refs/heads/main", tree_sha="old123456789")
+
+    assert version_transition(provenance, provenance) == "main@old1234"
