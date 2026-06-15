@@ -18,9 +18,11 @@ skeel update
 Large manifests no longer wait for each install or update check to finish
 before starting the next one.
 
-Human output now uses a consistent status column and skill-first labels:
+Human output now uses a consistent status column, skill-first labels, and a
+muted `⌂` suffix for user-scope skills:
 
 ```text
+✔︎ skill-creator anthropics/skills main@3cf9a8d ⌂
 ✔︎ tenzir-docs tenzir/skills main@f3842c1
 + wrangler cloudflare/skills
 - obsolete-skill installed

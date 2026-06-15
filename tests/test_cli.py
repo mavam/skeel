@@ -391,6 +391,67 @@ sources:
     ]
 
 
+def test_list_marks_user_scope_rows_with_home_suffix(tmp_path, capsys, monkeypatch) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    (home / ".agents").mkdir(parents=True)
+    (project / ".agents").mkdir(parents=True)
+    (project / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  tenzir/skills:
+    - tenzir-docs
+""".strip()
+    )
+    (home / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  anthropics/skills:
+    - skill-creator
+  cloudflare/skills:
+    - wrangler
+  mavam/quarto-brief:
+""".strip()
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    async def fake_installed_skills(options, runner):
+        if options.directory == project / ".agents" / "skills":
+            return (
+                InstalledSkill(
+                    name="tenzir-docs",
+                    path=options.directory / "tenzir-docs",
+                    version="main@a5d04ab",
+                ),
+            )
+        assert options.directory == home / ".agents" / "skills"
+        return (
+            InstalledSkill(
+                name="skill-creator",
+                path=options.directory / "skill-creator",
+                version="main@3cf9a8d",
+            ),
+            InstalledSkill(
+                name="custom/quarto",
+                path=options.directory / "quarto",
+                source_url="https://github.com/mavam/quarto-brief.git",
+                version="main@e89c555",
+            ),
+        )
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["list"]) == 0
+
+    assert capsys.readouterr().out.splitlines() == [
+        "✔︎ tenzir-docs tenzir/skills main@a5d04ab",
+        "✔︎ skill-creator anthropics/skills main@3cf9a8d ⌂",
+        "✘ wrangler cloudflare/skills ⌂",
+        "✔︎ quarto mavam/quarto-brief main@e89c555 ⌂",
+    ]
+
+
 def test_diff_matches_namespaced_installed_skills_by_basename(monkeypatch) -> None:
     manifest = Manifest(
         path=Path("manifest.yaml"),

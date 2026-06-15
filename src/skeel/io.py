@@ -35,6 +35,7 @@ MARKER_REMOVE = OutputMarker("-", "red")
 MARKER_PREVIEW = OutputMarker("↳", "cyan")
 MARKER_NOOP = OutputMarker("=", "bright_black")
 MARKER_EMPTY = OutputMarker("∅", "bright_black")
+SCOPE_USER = "⌂"
 STYLE_REPO = "not bold cyan"
 STYLE_SEPARATOR = "not bold bright_black"
 STYLE_SKILL = "bold black"

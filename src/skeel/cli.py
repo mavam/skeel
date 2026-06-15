@@ -28,6 +28,7 @@ from .io import (
     MARKER_NOOP,
     MARKER_PREVIEW,
     MARKER_SUCCESS,
+    SCOPE_USER,
     ProcessRunner,
     StepResult,
     Terminal,
@@ -821,11 +822,12 @@ async def command_list(command: CommonOptions) -> int:
             terminal.no_manifest(path)
         return 0
 
-    show_scope = len({row.scope for row in rows}) > 1
     for row in rows:
-        detail_parts = [row.scope] if show_scope else []
+        detail_parts: list[str] = []
         if row.version:
             detail_parts.append(row.version)
+        if row.scope == "user":
+            detail_parts.append(SCOPE_USER)
         terminal.status_line(
             MARKER_SUCCESS if row.status == "installed" else MARKER_FAILURE,
             row.label,
