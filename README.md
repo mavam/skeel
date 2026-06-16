@@ -114,7 +114,8 @@ uvx skeel diff
 
 Reconcile installed skills with the manifest. Missing skills are installed and
 extra skills are removed. Use `--reinstall` to run every manifest installer
-without diffing first, or `apply <source> [skill]` to target one source.
+without diffing first, or `apply <source> [skill]` to target one source. A
+selector that does not match the manifest exits with an error.
 
 ```sh
 uvx skeel apply --dry-run
@@ -139,10 +140,14 @@ uvx skeel apply
 ### `update`
 
 Update installed skills that are represented by the manifest. Each installed
-skill is checked independently, and remote update checks run in parallel.
+skill is checked independently, and remote update checks run in parallel. Pass a
+source, or a source and skill, to update only that manifest selection. A selector
+that does not match the manifest exits with an error.
 
 ```sh
 uvx skeel update
+uvx skeel update tenzir/skills
+uvx skeel update tenzir/skills tenzir-docs
 ```
 
 ```text
@@ -181,7 +186,8 @@ uvx skeel add mavam/quarto-brief --dry-run
 ### `remove`
 
 Remove a source or source/skill entry from the manifest. Omit the skill to
-remove the whole source. Pass `--apply` to reconcile immediately.
+remove the whole source. Pass `--apply` to reconcile immediately. A selector
+that does not match the manifest exits with an error.
 
 ```sh
 uvx skeel remove tenzir/skills tenzir-docs

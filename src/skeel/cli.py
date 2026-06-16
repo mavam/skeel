@@ -44,7 +44,11 @@ from .reconcile import (
     SkillDiff,
     apply_plan,
     diff_installed_skills,
+    filter_manifest,
     list_manifest_skills,
+    selector_label,
+    selector_matches_manifest,
+    update_installed_skills,
 )
 
 
@@ -106,6 +110,11 @@ class CommonOptions(Protocol):
 
 class ApplyOptions(CommonOptions, Protocol):
     reinstall: bool
+    source: str | None
+    skill: str | None
+
+
+class UpdateOptions(CommonOptions, Protocol):
     source: str | None
     skill: str | None
 
@@ -379,7 +388,12 @@ async def command_apply(command: ApplyOptions) -> int:
     results: list[StepResult] = []
     exit_code = 0
     selector = apply_selector(command)
+    if selector is not None and not selection_matches_selector(selection, selector):
+        terminal.error(no_manifest_entry_message(selector))
+        return 2
     for context in selection.contexts:
+        if selector is not None and not selector_matches_manifest(context.manifest, selector):
+            continue
         steps = await apply_steps(
             context.manifest,
             context.runtime,
@@ -431,6 +445,33 @@ def apply_selector(command: ApplyOptions) -> ApplySelector | None:
     if command.source is None:
         return None
     return ApplySelector(source=command.source, skill=command.skill)
+
+
+def update_selector(command: UpdateOptions) -> ApplySelector | None:
+    if command.source is None:
+        return None
+    return ApplySelector(source=command.source, skill=command.skill)
+
+
+def remove_selector(command: RemoveOptions) -> ApplySelector:
+    return ApplySelector(source=command.source, skill=command.skill)
+
+
+def selection_matches_selector(
+    selection: ManifestSelection,
+    selector: ApplySelector,
+) -> bool:
+    return any(
+        selector_matches_manifest(context.manifest, selector) for context in selection.contexts
+    )
+
+
+def no_manifest_entry_message(selector: ApplySelector) -> str:
+    return f"no manifest entry matches: {selector_label(selector)}"
+
+
+def selected_skill_not_installed_message(selector: ApplySelector) -> str:
+    return f"selected skill is not installed: {selector_label(selector)}"
 
 
 async def run_apply_steps(
@@ -508,6 +549,12 @@ async def command_add(command: AddOptions) -> int:
 async def command_remove(command: RemoveOptions) -> int:
     runtime = build_runtime(command)
     manifest_exists = runtime.manifest_path.exists()
+    selector = remove_selector(command)
+    if manifest_exists and not selector_matches_manifest(
+        load_manifest(runtime.manifest_path), selector
+    ):
+        runtime.terminal.error(no_manifest_entry_message(selector))
+        return 2
     update = remove_manifest_source(
         runtime.manifest_path,
         command.source,
@@ -591,16 +638,37 @@ def add_label(source: str, skill: str | None) -> str:
     return source_skill_label(source, parse_skill(skill).name if skill else "*")
 
 
-async def command_update(command: CommonOptions) -> int:
+async def command_update(command: UpdateOptions) -> int:
     terminal = Terminal(json_output=command.json)
     selection = select_manifest_contexts(command)
+    if not selection.found_manifest:
+        if command.json:
+            terminal.json(run_json(dry_run=command.dry_run, steps=[]))
+        else:
+            for path in selection.missing_paths:
+                terminal.no_manifest(path)
+        return 0
+
+    selector = update_selector(command)
+    if selector is not None and not selection_matches_selector(selection, selector):
+        terminal.error(no_manifest_entry_message(selector))
+        return 2
+
     results: list[StepResult] = []
     exit_code = 0
     for context in selection.contexts:
-        steps = update_steps(
+        if selector is not None and not selector_matches_manifest(context.manifest, selector):
+            continue
+        manifest = filter_manifest(context.manifest, selector)
+        installed = update_installed_skills(
+            context.manifest,
             await installed_skills(context.runtime.options, context.runtime.runner),
+            selector,
+        )
+        steps = update_steps(
+            installed,
             context.runtime.options,
-            manifest=context.manifest,
+            manifest=manifest,
         )
         scope_results, scope_exit_code = await run_steps(
             steps,
@@ -613,13 +681,9 @@ async def command_update(command: CommonOptions) -> int:
         if scope_exit_code and not exit_code:
             exit_code = scope_exit_code
 
-    if not selection.found_manifest:
-        if command.json:
-            terminal.json(run_json(dry_run=command.dry_run, steps=[]))
-        else:
-            for path in selection.missing_paths:
-                terminal.no_manifest(path)
-        return 0
+    if selector is not None and not results:
+        terminal.error(selected_skill_not_installed_message(selector))
+        return 2
 
     if command.json:
         terminal.json(run_json(dry_run=command.dry_run, steps=results))
@@ -759,6 +823,14 @@ class Remove(SkeelCommand):
 class Update(SkeelCommand):
     """Update installed skills declared by manifests."""
 
+    source: Positional[str | None] = arg(
+        None,
+        help="Optional manifest source to update, such as owner/repo.",
+    )
+    skill: Positional[str | None] = arg(
+        None,
+        help="Optional skill to update from the selected source.",
+    )
     manifest: str | None = manifest_arg(inherited=True)
     scope: str | None = scope_arg(inherited=True)
     dry_run: bool = dry_run_arg(inherited=True)

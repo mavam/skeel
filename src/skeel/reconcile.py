@@ -185,6 +185,17 @@ def filter_manifest(
     return Manifest(path=manifest.path, sources=tuple(sources))
 
 
+def selector_label(selector: ApplySelector) -> str:
+    return source_skill_label(
+        selector.source,
+        parse_skill(selector.skill).name if selector.skill else "*",
+    )
+
+
+def selector_matches_manifest(manifest: Manifest, selector: ApplySelector) -> bool:
+    return bool(filter_manifest(manifest, selector).sources)
+
+
 def filter_source(source: SourceSpec, skill: str | None) -> SourceSpec | None:
     if skill is None:
         return source
@@ -253,6 +264,43 @@ def matching_installed_skill(
         if skill := index.get(alias):
             return skill
     return None
+
+
+def update_installed_skills(
+    manifest: Manifest,
+    installed: Sequence[InstalledSkill],
+    selector: ApplySelector | None,
+) -> tuple[InstalledSkill, ...]:
+    if selector is None:
+        return tuple(installed)
+
+    selected: list[InstalledSkill] = []
+    seen_paths: set[Path] = set()
+    installed_index = installed_skill_index(installed)
+    for source in filter_manifest(manifest, selector).sources:
+        if source.install_all:
+            matches = matching_dynamic_source_skills(source, installed)
+        else:
+            matches = tuple(
+                match
+                for skill in source.skills
+                if (
+                    match := matching_installed_skill(
+                        DesiredSkill(
+                            name=skill.name,
+                            spec=skill.spec,
+                            source=source.source,
+                        ),
+                        installed_index,
+                    )
+                )
+            )
+        for match in matches:
+            if match.path in seen_paths:
+                continue
+            seen_paths.add(match.path)
+            selected.append(match)
+    return tuple(selected)
 
 
 def dynamic_source_installed(source: SourceSpec, installed: Sequence[InstalledSkill]) -> bool:

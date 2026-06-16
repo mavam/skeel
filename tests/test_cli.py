@@ -162,6 +162,24 @@ sources:
     assert [step["label"] for step in payload["steps"]] == ["tenzir/skills@tenzir-ecs"]
 
 
+def test_apply_selector_requires_manifest_match(tmp_path, capsys, monkeypatch) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  tenzir/skills:
+    - tenzir-docs
+""",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["--manifest", str(path), "apply", "cloudflare/skills", "--dry-run"]) == 2
+    assert "no manifest entry matches: cloudflare/skills@*" in capsys.readouterr().err
+
+    assert main(["--manifest", str(path), "apply", "tenzir/skills", "tenzir-ecs", "--dry-run"]) == 2
+    assert "no manifest entry matches: tenzir/skills@tenzir-ecs" in capsys.readouterr().err
+
+
 def test_add_writes_manifest_in_keyed_shape(tmp_path, capsys, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
 
@@ -200,6 +218,26 @@ sources:
     assert manifest.sources[0].source == "tenzir/skills"
     assert [skill.name for skill in manifest.sources[0].skills] == ["tenzir-ecs"]
     assert path.read_text() == "sources:\n  tenzir/skills:\n    - tenzir-ecs\n"
+
+
+def test_remove_selector_requires_manifest_match(tmp_path, capsys) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  tenzir/skills:
+    - tenzir-docs
+""",
+    )
+    original = path.read_text()
+
+    assert main(["--manifest", str(path), "remove", "cloudflare/skills"]) == 2
+    assert "no manifest entry matches: cloudflare/skills@*" in capsys.readouterr().err
+    assert path.read_text() == original
+
+    assert main(["--manifest", str(path), "remove", "tenzir/skills", "tenzir-ecs"]) == 2
+    assert "no manifest entry matches: tenzir/skills@tenzir-ecs" in capsys.readouterr().err
+    assert path.read_text() == original
 
 
 def test_list_reports_project_and_user_manifest_statuses_by_default(
@@ -534,3 +572,149 @@ sources:
         "clacks",
         "mattpocock/skills@caveman",
     ]
+
+
+def test_update_source_selector_only_updates_selected_manifest_source(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  cloudflare/skills:
+    - wrangler
+  tenzir/skills:
+    - tenzir-docs
+    - tenzir-ecs
+""",
+    )
+    target = tmp_path / ".agents" / "skills"
+    target.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_installed_skills(options, runner):
+        assert options.directory == target
+        return (
+            InstalledSkill(name="wrangler", path=target / "wrangler"),
+            InstalledSkill(name="tenzir-ecs", path=target / "tenzir-ecs"),
+            InstalledSkill(name="clacks", path=target / "clacks"),
+            InstalledSkill(name="tenzir-docs", path=target / "tenzir-docs"),
+        )
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "--manifest", str(path), "update", "tenzir/skills", "--dry-run"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [step["label"] for step in payload["steps"]] == [
+        "tenzir/skills@tenzir-docs",
+        "tenzir/skills@tenzir-ecs",
+    ]
+
+
+def test_update_skill_selector_only_updates_selected_manifest_skill(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  tenzir/skills:
+    - tenzir-docs
+    - tenzir-ecs
+""",
+    )
+    target = tmp_path / ".agents" / "skills"
+    target.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_installed_skills(options, runner):
+        assert options.directory == target
+        return (
+            InstalledSkill(name="tenzir-docs", path=target / "tenzir-docs"),
+            InstalledSkill(name="tenzir-ecs", path=target / "tenzir-ecs"),
+        )
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert (
+        main(
+            [
+                "--json",
+                "--manifest",
+                str(path),
+                "update",
+                "tenzir/skills",
+                "tenzir-ecs",
+                "--dry-run",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [step["label"] for step in payload["steps"]] == ["tenzir/skills@tenzir-ecs"]
+    assert payload["steps"][0]["command"] == [
+        "gh",
+        "skill",
+        "update",
+        "tenzir-ecs",
+        "--dir",
+        str(target),
+    ]
+
+
+def test_update_selector_requires_manifest_match(tmp_path, capsys, monkeypatch) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  tenzir/skills:
+    - tenzir-docs
+""",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["--manifest", str(path), "update", "cloudflare/skills", "--dry-run"]) == 2
+    assert "no manifest entry matches: cloudflare/skills@*" in capsys.readouterr().err
+
+    assert (
+        main(["--manifest", str(path), "update", "tenzir/skills", "tenzir-ecs", "--dry-run"]) == 2
+    )
+    assert "no manifest entry matches: tenzir/skills@tenzir-ecs" in capsys.readouterr().err
+
+
+def test_update_selector_requires_installed_skill(tmp_path, capsys, monkeypatch) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  tenzir/skills:
+    - tenzir-docs
+""",
+    )
+    target = tmp_path / ".agents" / "skills"
+    target.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_installed_skills(options, runner):
+        assert options.directory == target
+        return ()
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert (
+        main(
+            [
+                "--manifest",
+                str(path),
+                "update",
+                "tenzir/skills",
+                "tenzir-docs",
+                "--dry-run",
+            ]
+        )
+        == 2
+    )
+
+    assert "selected skill is not installed: tenzir/skills@tenzir-docs" in capsys.readouterr().err
