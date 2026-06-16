@@ -1,0 +1,8 @@
+created: 2026-06-16
+title: Selective skill updates
+intro: >-
+  Skeel now lets you update a specific manifest source or skill. Manifest-scoped commands
+  also fail clearly when a selector does not match any declared source or skill.
+source:
+  mode: sync-stable-queue
+  previous_stable: v0.4.0
