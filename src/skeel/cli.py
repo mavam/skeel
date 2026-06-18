@@ -128,7 +128,7 @@ class AddOptions(CommonOptions, Protocol):
 
 
 class RemoveOptions(CommonOptions, Protocol):
-    source: str
+    source: str | None
     skill: str | None
     apply: bool
 
@@ -455,10 +455,6 @@ def update_selector(command: UpdateOptions) -> ApplySelector | None:
     return ApplySelector(source=command.source, skill=command.skill)
 
 
-def remove_selector(command: RemoveOptions) -> ApplySelector:
-    return ApplySelector(source=command.source, skill=command.skill)
-
-
 def selection_matches_selector(
     selection: ManifestSelection,
     selector: ApplySelector,
@@ -470,6 +466,12 @@ def selection_matches_selector(
 
 def no_manifest_entry_message(selector: ApplySelector) -> str:
     return f"no manifest entry matches: {selector_label(selector)}"
+
+
+def no_remove_target_message(source: str | None, skill: str | None) -> str:
+    if source is None:
+        return f"no manifest entry matches skill: {skill}"
+    return no_manifest_entry_message(ApplySelector(source=source, skill=skill))
 
 
 def selected_skill_not_installed_message(selector: ApplySelector) -> str:
@@ -553,19 +555,25 @@ async def command_remove(command: RemoveOptions) -> int:
     manifest_exists = runtime.manifest_path.exists()
     source = command.source
     skill = command.skill
+    if source is None and skill is None:
+        runtime.terminal.error("skill or --source is required")
+        return 2
     if manifest_exists:
         try:
             target = resolve_remove_target(
-                load_manifest(runtime.manifest_path), command.source, command.skill
+                load_manifest(runtime.manifest_path), skill, source=source
             )
         except AmbiguousRemoveTarget as error:
             runtime.terminal.error(str(error))
             return 2
         if target is None:
-            runtime.terminal.error(no_manifest_entry_message(remove_selector(command)))
+            runtime.terminal.error(no_remove_target_message(source, skill))
             return 2
         source = target.source
         skill = target.skill
+    elif source is None:
+        runtime.terminal.error(f"no manifest at {runtime.manifest_path}")
+        return 2
     update = remove_manifest_source(
         runtime.manifest_path,
         source,
@@ -814,14 +822,15 @@ class Add(SkeelCommand):
 
 
 class Remove(SkeelCommand):
-    """Remove a desired skill source from the manifest."""
+    """Remove a desired skill or source from the manifest."""
 
-    source: Positional[str] = arg(
-        help="Source (owner/repo) or skill name to remove.",
-    )
     skill: Positional[str | None] = arg(
         None,
-        help="Optional skill to remove from the given source. Omit to resolve by name.",
+        help="Skill name to remove. Omit when removing a whole source with --source.",
+    )
+    source: str | None = arg(
+        None,
+        help="Manifest source to remove from, such as owner/repo.",
     )
     apply: bool = arg(
         False,

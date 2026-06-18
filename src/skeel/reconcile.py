@@ -39,39 +39,41 @@ class AmbiguousRemoveTarget(Exception):
         )
         super().__init__(
             f'"{target}" is ambiguous; it matches {labels}. '
-            "Disambiguate with: skeel remove <source> <skill>."
+            "Disambiguate with: skeel remove <skill> --source <source>."
         )
 
 
 def resolve_remove_target(
     manifest: Manifest,
-    target: str,
     skill: str | None,
+    *,
+    source: str | None = None,
 ) -> RemoveTarget | None:
     """Resolve a remove request to a concrete source and optional skill.
 
-    With an explicit ``skill`` the ``target`` is treated as a source. Otherwise
-    ``target`` may name either a source or a single skill; ambiguous names raise
-    ``AmbiguousRemoveTarget``.
+    An explicit ``source`` removes either that whole source or the selected skill
+    from it. Without ``source``, ``skill`` must unambiguously name a single
+    manifest skill.
     """
-    if skill is not None:
-        selector = ApplySelector(source=target, skill=skill)
+    if source is not None:
+        selector = ApplySelector(source=source, skill=skill)
         if not selector_matches_manifest(manifest, selector):
             return None
-        return RemoveTarget(source=target, skill=skill)
+        return RemoveTarget(source=source, skill=skill)
+
+    if skill is None:
+        return None
 
     candidates: list[RemoveTarget] = []
-    if any(source.source == target for source in manifest.sources):
-        candidates.append(RemoveTarget(source=target, skill=None))
-    for source in manifest.sources:
-        for spec in source.skills:
-            if spec.name == target:
-                candidates.append(RemoveTarget(source=source.source, skill=spec.name))
+    for manifest_source in manifest.sources:
+        for spec in manifest_source.skills:
+            if spec.name == skill:
+                candidates.append(RemoveTarget(source=manifest_source.source, skill=spec.name))
 
     if not candidates:
         return None
     if len(candidates) > 1:
-        raise AmbiguousRemoveTarget(target, candidates)
+        raise AmbiguousRemoveTarget(skill, candidates)
     return candidates[0]
 
 
