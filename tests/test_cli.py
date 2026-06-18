@@ -209,8 +209,23 @@ sources:
 """,
     )
 
-    assert main(["--json", "--manifest", str(path), "remove", "tenzir/skills", "tenzir-docs"]) == 0
-    assert main(["--json", "--manifest", str(path), "remove", "mavam/quarto-brief"]) == 0
+    assert (
+        main(
+            [
+                "--json",
+                "--manifest",
+                str(path),
+                "remove",
+                "tenzir-docs",
+                "--source",
+                "tenzir/skills",
+            ]
+        )
+        == 0
+    )
+    assert (
+        main(["--json", "--manifest", str(path), "remove", "--source", "mavam/quarto-brief"]) == 0
+    )
 
     payload = json.loads(capsys.readouterr().out.splitlines()[-1])
     manifest = load_manifest(path)
@@ -220,7 +235,82 @@ sources:
     assert path.read_text() == "sources:\n  tenzir/skills:\n    - tenzir-ecs\n"
 
 
-def test_remove_selector_requires_manifest_match(tmp_path, capsys) -> None:
+def test_remove_resolves_unique_skill_name(tmp_path, capsys) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  tenzir/skills:
+    - tenzir-docs@main
+    - tenzir-ecs
+  cloudflare/skills:
+    - wrangler
+""",
+    )
+
+    assert main(["--json", "--manifest", str(path), "remove", "tenzir-docs"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    manifest = load_manifest(path)
+    assert payload["changed"] is True
+    assert payload["source"] == "tenzir/skills"
+    assert payload["skill"] == "tenzir-docs"
+    remaining = [
+        (source.source, [skill.name for skill in source.skills]) for source in manifest.sources
+    ]
+    assert remaining == [
+        ("tenzir/skills", ["tenzir-ecs"]),
+        ("cloudflare/skills", ["wrangler"]),
+    ]
+
+
+def test_remove_source_flag_removes_whole_source(tmp_path, capsys) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  tenzir/skills:
+    - tenzir-docs
+  cloudflare/skills:
+    - wrangler
+""",
+    )
+
+    assert main(["--json", "--manifest", str(path), "remove", "--source", "tenzir/skills"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    manifest = load_manifest(path)
+    assert payload["changed"] is True
+    assert payload["source"] == "tenzir/skills"
+    assert "skill" not in payload
+    assert [source.source for source in manifest.sources] == ["cloudflare/skills"]
+
+
+def test_remove_rejects_ambiguous_skill_name(tmp_path, capsys) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  tenzir/skills:
+    - wrangler
+  cloudflare/skills:
+    - wrangler
+""",
+    )
+    original = path.read_text()
+
+    assert main(["--manifest", str(path), "remove", "wrangler"]) == 2
+
+    assert path.read_text() == original
+    error = capsys.readouterr().err
+    assert '"wrangler" is ambiguous' in error
+    assert "tenzir/skills@wrangler" in error
+    assert "cloudflare/skills@wrangler" in error
+    assert "skeel remove <skill> --source" in error
+    assert "<source>" in error
+
+
+def test_remove_unknown_skill_name_requires_manifest_match(tmp_path, capsys) -> None:
     path = write_manifest(
         tmp_path,
         """
@@ -231,11 +321,39 @@ sources:
     )
     original = path.read_text()
 
-    assert main(["--manifest", str(path), "remove", "cloudflare/skills"]) == 2
+    assert main(["--manifest", str(path), "remove", "wrangler"]) == 2
+    assert "no manifest entry matches skill: wrangler" in capsys.readouterr().err
+    assert path.read_text() == original
+
+
+def test_remove_source_requires_manifest_match(tmp_path, capsys) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  tenzir/skills:
+    - tenzir-docs
+""",
+    )
+    original = path.read_text()
+
+    assert main(["--manifest", str(path), "remove", "--source", "cloudflare/skills"]) == 2
     assert "no manifest entry matches: cloudflare/skills@*" in capsys.readouterr().err
     assert path.read_text() == original
 
-    assert main(["--manifest", str(path), "remove", "tenzir/skills", "tenzir-ecs"]) == 2
+    assert (
+        main(
+            [
+                "--manifest",
+                str(path),
+                "remove",
+                "tenzir-ecs",
+                "--source",
+                "tenzir/skills",
+            ]
+        )
+        == 2
+    )
     assert "no manifest entry matches: tenzir/skills@tenzir-ecs" in capsys.readouterr().err
     assert path.read_text() == original
 

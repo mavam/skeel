@@ -185,20 +185,32 @@ uvx skeel add mavam/quarto-brief --dry-run
 
 ### `remove`
 
-Remove a source or source/skill entry from the manifest. Omit the skill to
-remove the whole source. Pass `--apply` to reconcile immediately. A selector
-that does not match the manifest exits with an error.
+Remove an unambiguous skill name from the manifest. Pass `--apply` to reconcile
+immediately. A selector that does not match the manifest exits with an error.
+
+`add` and `remove` are intentionally asymmetric: adding starts from a source
+because skeel needs to know where to install from, while removing starts from a
+skill because that is the common user intent. Use `--source` only to
+disambiguate or remove a whole source.
 
 ```sh
-uvx skeel remove tenzir/skills tenzir-docs
+uvx skeel remove tenzir-docs
 ```
 
 ```text
 ✔︎ tenzir-docs tenzir/skills .agents/skills.yaml
 ```
 
+When multiple sources declare the same skill name, disambiguate with `--source`:
+
 ```sh
-uvx skeel remove mavam/quarto-brief --dry-run
+uvx skeel remove tenzir-docs --source tenzir/skills
+```
+
+Omit the skill to remove the whole source selected by `--source`:
+
+```sh
+uvx skeel remove --source mavam/quarto-brief --dry-run
 ```
 
 ```text
