@@ -188,6 +188,11 @@ uvx skeel add mavam/quarto-brief --dry-run
 Remove an unambiguous skill name from the manifest. Pass `--apply` to reconcile
 immediately. A selector that does not match the manifest exits with an error.
 
+`add` and `remove` are intentionally asymmetric: adding starts from a source
+because skeel needs to know where to install from, while removing starts from a
+skill because that is the common user intent. Use `--source` only to
+disambiguate or remove a whole source.
+
 ```sh
 uvx skeel remove tenzir-docs
 ```
