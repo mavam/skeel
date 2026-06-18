@@ -326,6 +326,66 @@ sources:
     assert path.read_text() == original
 
 
+def test_remove_resolves_user_scope_by_default(tmp_path, capsys, monkeypatch) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    (home / ".agents").mkdir(parents=True)
+    project.mkdir()
+    user_manifest = home / ".agents" / "skills.yaml"
+    user_manifest.write_text(
+        """
+sources:
+  example/skills:
+    - alpha-skill
+    - beta-skill
+""".strip()
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    assert main(["--json", "remove", "alpha-skill"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    manifest = load_manifest(user_manifest)
+    assert payload["changed"] is True
+    assert payload["manifest"] == str(user_manifest)
+    assert payload["source"] == "example/skills"
+    assert payload["skill"] == "alpha-skill"
+    assert [skill.name for skill in manifest.sources[0].skills] == ["beta-skill"]
+
+
+def test_remove_requires_scope_when_default_matches_project_and_user(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    (home / ".agents").mkdir(parents=True)
+    (project / ".agents").mkdir(parents=True)
+    (project / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  example/skills:
+    - alpha-skill
+""".strip()
+    )
+    (home / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  example/skills:
+    - alpha-skill
+""".strip()
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    assert main(["remove", "alpha-skill"]) == 2
+
+    error = capsys.readouterr().err
+    assert "matches multiple scopes" in error
+    assert "--scope project" in error
+    assert "--scope user" in error
+
+
 def test_remove_source_requires_manifest_match(tmp_path, capsys) -> None:
     path = write_manifest(
         tmp_path,
