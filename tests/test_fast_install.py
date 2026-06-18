@@ -3,10 +3,12 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
 import yaml
 
 from skeel.fast_install import (
     DiscoveredSkill,
+    FastInstallError,
     FastInstallSession,
     ResolvedRef,
     install_skill,
@@ -81,6 +83,15 @@ def test_select_skill_matches_hidden_and_namespaced_paths(tmp_path: Path) -> Non
         )
         == namespaced
     )
+
+
+def test_select_skill_reports_source_when_skill_is_missing(tmp_path: Path) -> None:
+    with pytest.raises(FastInstallError, match='skill "missing-skill" not found in example/skills'):
+        select_skill(
+            (DiscoveredSkill(name="other-skill", path="skills/other-skill", directory=tmp_path),),
+            SkillSpec(spec="missing-skill", name="missing-skill"),
+            source="example/skills",
+        )
 
 
 def test_fast_install_session_reuses_remote_cache_concurrently(

@@ -57,7 +57,7 @@ class FastInstallSession:
         _, root, resolved = self._source_archive(pin)
         tree_shas = self._source_tree_shas(resolved.commit_sha)
         skills = self._source_skills(root)
-        selected = skills if skill is None else (select_skill(skills, skill),)
+        selected = skills if skill is None else (select_skill(skills, skill, source=source.source),)
         for selected_skill in selected:
             tree_sha = tree_shas.get(selected_skill.path)
             if not tree_sha:
@@ -210,7 +210,12 @@ def discover_skills(root: Path) -> tuple[DiscoveredSkill, ...]:
     return tuple(sorted(skills, key=lambda skill: skill.path))
 
 
-def select_skill(skills: tuple[DiscoveredSkill, ...], requested: SkillSpec) -> DiscoveredSkill:
+def select_skill(
+    skills: tuple[DiscoveredSkill, ...],
+    requested: SkillSpec,
+    *,
+    source: str | None = None,
+) -> DiscoveredSkill:
     spec = skill_command_label(requested).removesuffix("/SKILL.md").rstrip("/")
     by_path = [skill for skill in skills if skill.path == spec]
     if by_path:
@@ -224,7 +229,8 @@ def select_skill(skills: tuple[DiscoveredSkill, ...], requested: SkillSpec) -> D
     if by_name:
         return by_name[0]
 
-    raise FastInstallError(f'skill "{requested.name}" not found in {requested.spec}')
+    location = source or requested.spec
+    raise FastInstallError(f'skill "{requested.name}" not found in {location}')
 
 
 def install_skill(

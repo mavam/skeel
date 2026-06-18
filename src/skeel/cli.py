@@ -42,6 +42,7 @@ from .reconcile import (
     AmbiguousRemoveTarget,
     ApplySelector,
     ListedSkill,
+    RemoveTarget,
     SkillDiff,
     apply_plan,
     diff_installed_skills,
@@ -552,28 +553,60 @@ async def command_add(command: AddOptions) -> int:
 
 async def command_remove(command: RemoveOptions) -> int:
     runtime = build_runtime(command)
-    manifest_exists = runtime.manifest_path.exists()
     source = command.source
     skill = command.skill
     if source is None and skill is None:
         runtime.terminal.error("skill or --source is required")
         return 2
-    if manifest_exists:
-        try:
-            target = resolve_remove_target(
-                load_manifest(runtime.manifest_path), skill, source=source
-            )
-        except AmbiguousRemoveTarget as error:
-            runtime.terminal.error(str(error))
-            return 2
-        if target is None:
+
+    if (
+        command.manifest is None
+        and command.scope is None
+        and os.environ.get("SKEEL_MANIFEST") is None
+    ):
+        selection = select_manifest_contexts(command)
+        matches: list[tuple[ManifestContext, RemoveTarget]] = []
+        for context in selection.contexts:
+            try:
+                target = resolve_remove_target(context.manifest, skill, source=source)
+            except AmbiguousRemoveTarget as error:
+                runtime.terminal.error(str(error))
+                return 2
+            if target is not None:
+                matches.append((context, target))
+        if not matches:
             runtime.terminal.error(no_remove_target_message(source, skill))
             return 2
+        if len(matches) > 1:
+            choices = ", ".join(f"--scope {context.scope}" for context, _target in matches)
+            runtime.terminal.error(
+                f"remove target matches multiple scopes; disambiguate with {choices}"
+            )
+            return 2
+        context, target = matches[0]
+        runtime = context.runtime
         source = target.source
         skill = target.skill
-    elif source is None:
-        runtime.terminal.error(f"no manifest at {runtime.manifest_path}")
-        return 2
+        manifest_exists = True
+    else:
+        manifest_exists = runtime.manifest_path.exists()
+        if manifest_exists:
+            try:
+                target = resolve_remove_target(
+                    load_manifest(runtime.manifest_path), skill, source=source
+                )
+            except AmbiguousRemoveTarget as error:
+                runtime.terminal.error(str(error))
+                return 2
+            if target is None:
+                runtime.terminal.error(no_remove_target_message(source, skill))
+                return 2
+            source = target.source
+            skill = target.skill
+        elif source is None:
+            runtime.terminal.error(f"no manifest at {runtime.manifest_path}")
+            return 2
+
     update = remove_manifest_source(
         runtime.manifest_path,
         source,
