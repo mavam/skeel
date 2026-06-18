@@ -4,6 +4,7 @@ type: change
 authors:
   - mavam
   - claude
+  - codex
 prs:
   - 2
 created: 2026-06-18T07:49:53.950754Z
