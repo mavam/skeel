@@ -24,6 +24,58 @@ class ApplySelector:
 
 
 @dataclass(frozen=True)
+class RemoveTarget:
+    source: str
+    skill: str | None = None
+
+
+class AmbiguousRemoveTarget(Exception):
+    def __init__(self, target: str, candidates: Sequence[RemoveTarget]) -> None:
+        self.target = target
+        self.candidates = tuple(candidates)
+        labels = ", ".join(
+            source_skill_label(candidate.source, candidate.skill or "*")
+            for candidate in self.candidates
+        )
+        super().__init__(
+            f'"{target}" is ambiguous; it matches {labels}. '
+            "Disambiguate with: skeel remove <source> <skill>."
+        )
+
+
+def resolve_remove_target(
+    manifest: Manifest,
+    target: str,
+    skill: str | None,
+) -> RemoveTarget | None:
+    """Resolve a remove request to a concrete source and optional skill.
+
+    With an explicit ``skill`` the ``target`` is treated as a source. Otherwise
+    ``target`` may name either a source or a single skill; ambiguous names raise
+    ``AmbiguousRemoveTarget``.
+    """
+    if skill is not None:
+        selector = ApplySelector(source=target, skill=skill)
+        if not selector_matches_manifest(manifest, selector):
+            return None
+        return RemoveTarget(source=target, skill=skill)
+
+    candidates: list[RemoveTarget] = []
+    if any(source.source == target for source in manifest.sources):
+        candidates.append(RemoveTarget(source=target, skill=None))
+    for source in manifest.sources:
+        for spec in source.skills:
+            if spec.name == target:
+                candidates.append(RemoveTarget(source=source.source, skill=spec.name))
+
+    if not candidates:
+        return None
+    if len(candidates) > 1:
+        raise AmbiguousRemoveTarget(target, candidates)
+    return candidates[0]
+
+
+@dataclass(frozen=True)
 class SkillDiff:
     missing: tuple[DesiredSkill, ...]
     extra: tuple[InstalledSkill, ...]
