@@ -1,0 +1,9 @@
+created: 2026-06-18
+title: Remove skills by name
+intro: >-
+  This release makes skill removal more convenient by allowing `skeel remove` to target
+  an unambiguous skill name directly. It also keeps source-level removal available
+  through the explicit `--source` option.
+source:
+  mode: sync-stable-queue
+  previous_stable: v0.5.0
