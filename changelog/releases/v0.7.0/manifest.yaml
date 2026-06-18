@@ -1,0 +1,9 @@
+created: 2026-06-18
+title: Improved skill manifest handling
+intro: >-
+  This release improves skill manifest management by making default removals cover
+  both project and user scopes. It also clarifies missing skill errors during archive-based
+  updates so users can identify the manifest source that failed.
+source:
+  mode: sync-stable-queue
+  previous_stable: v0.6.0
