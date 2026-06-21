@@ -1,0 +1,9 @@
+created: 2026-06-21
+title: Stable live progress output
+intro: >-
+  This release stabilizes the interactive update progress display. Long-running update
+  steps now finish with a single final status list instead of duplicate completed
+  rows.
+source:
+  mode: sync-stable-queue
+  previous_stable: v0.7.0
