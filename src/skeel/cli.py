@@ -162,6 +162,9 @@ class ManifestSelection:
         return bool(self.contexts)
 
 
+SelectionKey = tuple[Path, Path]
+
+
 def build_runtime(command: CommonOptions) -> Runtime:
     return build_runtime_for_scope(command, scope=single_scope(command))
 
@@ -198,17 +201,43 @@ def load_runtime_manifest(runtime: Runtime) -> Manifest | None:
     return load_manifest(runtime.manifest_path)
 
 
+def selection_key(runtime: Runtime) -> SelectionKey:
+    return (canonical_path(runtime.manifest_path), canonical_path(runtime.options.directory))
+
+
+def canonical_path(path: Path) -> Path:
+    return path.expanduser().resolve()
+
+
+def prefer_manifest_context(candidate: ManifestContext, current: ManifestContext) -> bool:
+    return candidate.scope == "user" and current.scope != "user"
+
+
 def select_manifest_contexts(command: CommonOptions) -> ManifestSelection:
-    contexts: list[ManifestContext] = []
-    missing_paths: list[Path] = []
+    contexts: dict[SelectionKey, ManifestContext] = {}
+    missing_paths: dict[SelectionKey, Path] = {}
     for scope in manifest_scopes(command):
         runtime = build_runtime_for_scope(command, scope=scope)
+        key = selection_key(runtime)
         manifest = load_runtime_manifest(runtime)
         if manifest is None:
-            missing_paths.append(runtime.manifest_path)
+            # Only record a missing path for a key we have not resolved yet,
+            # preferring the user-scope path when scopes collapse onto one key.
+            if key not in contexts and (key not in missing_paths or scope == "user"):
+                missing_paths[key] = runtime.manifest_path
             continue
-        contexts.append(ManifestContext(scope=scope, runtime=runtime, manifest=manifest))
-    return ManifestSelection(contexts=tuple(contexts), missing_paths=tuple(missing_paths))
+
+        context = ManifestContext(scope=scope, runtime=runtime, manifest=manifest)
+        missing_paths.pop(key, None)
+        if key not in contexts:
+            contexts[key] = context
+        elif prefer_manifest_context(context, contexts[key]):
+            contexts[key] = context
+
+    return ManifestSelection(
+        contexts=tuple(contexts.values()),
+        missing_paths=tuple(missing_paths.values()),
+    )
 
 
 async def diff_skills(

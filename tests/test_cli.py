@@ -562,6 +562,46 @@ sources:
     ]
 
 
+def test_list_deduplicates_project_and_user_scope_at_home(tmp_path, capsys, monkeypatch) -> None:
+    home = tmp_path
+    (home / ".agents").mkdir(parents=True)
+    (home / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  cloudflare/skills:
+    - wrangler
+""".strip()
+    )
+    monkeypatch.chdir(home)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+    calls: list[Path] = []
+
+    async def fake_installed_skills(options, runner):
+        calls.append(options.directory)
+        return (InstalledSkill(name="wrangler", path=options.directory / "wrangler"),)
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "list"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert calls == [home / ".agents" / "skills"]
+    assert [(skill["scope"], skill["label"], skill["status"]) for skill in payload["skills"]] == [
+        ("user", "cloudflare/skills@wrangler", "installed"),
+    ]
+
+
+def test_list_reports_single_missing_manifest_at_home(tmp_path, capsys, monkeypatch) -> None:
+    home = tmp_path
+    monkeypatch.chdir(home)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    assert main(["list"]) == 0
+
+    output = capsys.readouterr().out
+    assert output.count("no manifest at") == 1
+
+
 def test_diff_matches_namespaced_installed_skills_by_basename(monkeypatch) -> None:
     manifest = Manifest(
         path=Path("manifest.yaml"),
@@ -869,6 +909,42 @@ sources:
     assert [step["label"] for step in payload["steps"]] == [
         "clacks",
         "mattpocock/skills@caveman",
+    ]
+
+
+def test_update_deduplicates_project_and_user_scope_at_home(tmp_path, capsys, monkeypatch) -> None:
+    home = tmp_path
+    target = home / ".agents" / "skills"
+    target.mkdir(parents=True)
+    (home / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  cloudflare/skills:
+    - wrangler
+  tenzir/skills:
+    - tenzir-docs
+""".strip()
+    )
+    monkeypatch.chdir(home)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+    calls: list[Path] = []
+
+    async def fake_installed_skills(options, runner):
+        calls.append(options.directory)
+        return (
+            InstalledSkill(name="wrangler", path=target / "wrangler"),
+            InstalledSkill(name="tenzir-docs", path=target / "tenzir-docs"),
+        )
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "update", "--dry-run"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert calls == [target]
+    assert [step["label"] for step in payload["steps"]] == [
+        "tenzir/skills@tenzir-docs",
+        "cloudflare/skills@wrangler",
     ]
 
 
