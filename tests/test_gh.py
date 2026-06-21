@@ -7,12 +7,14 @@ from skeel.gh import (
     GhOptions,
     InstalledSkill,
     SkillProvenance,
+    SkillStep,
     fast_update_outcome,
     install_steps,
     installed_skills,
     manual_install_steps,
     parse_gh_version,
     read_skill_provenance,
+    update_outcome,
     update_steps,
 )
 from skeel.io import ProcessResult
@@ -282,7 +284,7 @@ name: tenzir-asim
     outcome = fast_update_outcome(skill)(ProcessResult(command=[], returncode=0))
 
     assert outcome.status == "current"
-    assert outcome.detail == "main@old1234"
+    assert outcome.detail is None
 
 
 def test_fast_update_outcome_marks_changed_pinned_skill_updated(tmp_path: Path) -> None:
@@ -331,9 +333,70 @@ def test_missing_provenance_has_no_version_transition() -> None:
     assert version_transition(SkillProvenance(), SkillProvenance()) is None
 
 
-def test_version_transition_omits_arrow_for_unchanged_versions() -> None:
+def test_version_transition_hides_detail_for_unchanged_versions() -> None:
     from skeel.gh import version_transition
 
     provenance = SkillProvenance(ref="refs/heads/main", tree_sha="old123456789")
 
-    assert version_transition(provenance, provenance) == "main@old1234"
+    assert version_transition(provenance, provenance) is None
+
+
+def test_update_outcome_detail_carries_only_version_transition(tmp_path: Path) -> None:
+    skill_path = tmp_path / "wrangler"
+    write_skill(
+        skill_path,
+        """
+---
+metadata:
+  github-ref: refs/heads/main
+  github-repo: https://github.com/cloudflare/skills
+  github-tree-sha: old123456789
+name: wrangler
+---
+# Wrangler
+""",
+    )
+    skill = InstalledSkill(
+        name="wrangler",
+        path=skill_path,
+        provenance=read_skill_provenance(skill_path),
+    )
+
+    # Unchanged: no version noise, and scope is never smuggled into the detail.
+    outcome = update_outcome(skill)(
+        ProcessResult(command=[], returncode=0, stdout="All skills are up to date")
+    )
+    assert outcome.detail is None
+
+    write_skill(
+        skill_path,
+        """
+---
+metadata:
+  github-ref: refs/heads/main
+  github-repo: https://github.com/cloudflare/skills
+  github-tree-sha: new123456789
+name: wrangler
+---
+# Wrangler
+""",
+    )
+
+    # Changed: the detail is the bare version transition, with no scope marker.
+    outcome = update_outcome(skill)(
+        ProcessResult(command=[], returncode=0, stdout="Updated wrangler")
+    )
+    assert outcome.detail == "main@old1234 → main@new1234"
+
+
+def test_scoped_steps_stamps_scope_onto_every_step() -> None:
+    from skeel.gh import scoped_steps
+
+    steps = [SkillStep(label="a", command=["a"]), SkillStep(label="b", command=["b"])]
+
+    user_steps = scoped_steps(steps, "user")
+    assert [step.scope for step in user_steps] == ["user", "user"]
+
+    # Project (and unscoped) steps carry no marker.
+    assert [step.scope for step in scoped_steps(steps, "project")] == ["project", "project"]
+    assert [step.scope for step in scoped_steps(steps, None)] == [None, None]

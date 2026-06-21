@@ -66,6 +66,7 @@ class StepResult:
     returncode: int | None
     status: str | None = None
     detail: str | None = None
+    scope: str | None = None
     stdout: str = ""
     stderr: str = ""
 
@@ -80,6 +81,8 @@ class StepResult:
             payload["status"] = self.status
         if self.detail is not None:
             payload["detail"] = self.detail
+        if self.scope is not None:
+            payload["scope"] = self.scope
         if self.stdout:
             payload["stdout"] = self.stdout
         if self.stderr:
@@ -99,6 +102,9 @@ class SkillStepLike(Protocol):
 
     @property
     def kind(self) -> str: ...
+
+    @property
+    def scope(self) -> str | None: ...
 
     @property
     def outcome(self) -> Callable[[ProcessResult], StepOutcome] | None: ...
@@ -136,14 +142,23 @@ def status_marker(status: str | None) -> OutputMarker | None:
             return None
 
 
-def detail_text(detail: str) -> Text:
-    text = Text()
-    if " → " not in detail:
-        text.append(detail, style=STYLE_DETAIL)
-        return text
+def scope_marker(scope: str | None) -> str | None:
+    return SCOPE_USER if scope == "user" else None
 
-    _before, after = detail.split(" → ", 1)
-    text.append(after, style=STYLE_NEW_VERSION)
+
+def detail_text(detail: str | None, *, scope: str | None = None) -> Text:
+    text = Text()
+    if detail:
+        if " → " in detail:
+            _before, after = detail.split(" → ", 1)
+            text.append(after, style=STYLE_NEW_VERSION)
+        else:
+            text.append(detail, style=STYLE_DETAIL)
+    marker = scope_marker(scope)
+    if marker:
+        if detail:
+            text.append(" ", style=STYLE_DETAIL)
+        text.append(marker, style=STYLE_DETAIL)
     return text
 
 
@@ -180,9 +195,14 @@ class StepDescriptionColumn(ProgressColumn):
     def render(self, task: Task) -> RenderableType:
         text = label_text(task.description)
         detail = task.fields.get("detail")
-        if isinstance(detail, str) and detail:
+        scope = task.fields.get("scope")
+        extra = detail_text(
+            detail if isinstance(detail, str) else None,
+            scope=scope if isinstance(scope, str) else None,
+        )
+        if extra.plain:
             text.append(" ", style=STYLE_DETAIL)
-            text.append_text(detail_text(detail))
+            text.append_text(extra)
         return text
 
 
@@ -256,8 +276,9 @@ class Terminal:
         label: str,
         *,
         detail: str | None = None,
+        scope: str | None = None,
     ) -> None:
-        self.line(self.status_text(marker, label, detail=detail))
+        self.line(self.status_text(marker, label, detail=detail, scope=scope))
 
     def step_status_line(
         self,
@@ -265,8 +286,9 @@ class Terminal:
         label: str,
         *,
         detail: str | None = None,
+        scope: str | None = None,
     ) -> None:
-        self.error_console.print(self.status_text(marker, label, detail=detail))
+        self.error_console.print(self.status_text(marker, label, detail=detail, scope=scope))
 
     def warning(self, message: str) -> None:
         self.error_console.print(message, style=STYLE_WARNING)
@@ -293,8 +315,8 @@ class Terminal:
 
     def diff(
         self,
-        missing: Sequence[tuple[str, str | None]],
-        extra: Sequence[tuple[str, str | None]],
+        missing: Sequence[tuple[str, str | None, str | None]],
+        extra: Sequence[tuple[str, str | None, str | None]],
         *,
         manifest_path: Path,
         warning: bool = False,
@@ -305,10 +327,10 @@ class Terminal:
         if warning:
             self.warning(f"skills differ from {manifest_path}")
 
-        for name, source in missing:
-            self.status_line(MARKER_INSTALL, f"{source or 'manual'}@{name}")
-        for name, source in extra:
-            self.status_line(MARKER_REMOVE, f"{source or 'installed'}@{name}")
+        for name, source, scope in missing:
+            self.status_line(MARKER_INSTALL, f"{source or 'manual'}@{name}", scope=scope)
+        for name, source, scope in extra:
+            self.status_line(MARKER_REMOVE, f"{source or 'installed'}@{name}", scope=scope)
 
     def dry_run_step(self, label: str, command: Command, *, action: str) -> StepResult:
         del action
@@ -322,13 +344,15 @@ class Terminal:
         label: str,
         *,
         detail: str | None = None,
+        scope: str | None = None,
     ) -> Text:
         text = Text(marker.icon, style=marker.color)
         text.append(" ")
         text.append_text(label_text(label))
-        if detail:
+        extra = detail_text(detail, scope=scope)
+        if extra.plain:
             text.append(" ", style=STYLE_DETAIL)
-            text.append_text(detail_text(detail))
+            text.append_text(extra)
         return text
 
     def live_progress_enabled(self) -> bool:
@@ -354,6 +378,7 @@ class Terminal:
         outcome: Callable[[ProcessResult], StepOutcome] | None = None,
         executor: StepExecutor | None = None,
         default_status: str | None = None,
+        scope: str | None = None,
     ) -> StepResult:
         result = await executor() if executor else await runner.run(command, capture_output=True)
         failed = result.returncode != 0
@@ -364,6 +389,7 @@ class Terminal:
             returncode=result.returncode,
             status=step_outcome.status or (default_status if not failed else None),
             detail=step_outcome.detail,
+            scope=scope,
             stdout=result.stdout if failed else "",
             stderr=result.stderr if failed else "",
         )
@@ -373,6 +399,8 @@ class Terminal:
         label: str,
         command: Command,
         path: Path,
+        *,
+        scope: str | None = None,
     ) -> StepResult:
         returncode = self._remove_path(path)
         return StepResult(
@@ -380,11 +408,12 @@ class Terminal:
             command=command,
             returncode=returncode,
             status="removed" if returncode == 0 else None,
+            scope=scope,
         )
 
     def render_step_result(self, result: StepResult) -> None:
         marker, detail = self.step_result_marker(result)
-        self.step_status_line(marker, result.label, detail=detail)
+        self.step_status_line(marker, result.label, detail=detail, scope=result.scope)
 
     def step_result_marker(self, result: StepResult) -> tuple[OutputMarker, str | None]:
         if result.returncode not in (None, 0):
@@ -409,6 +438,7 @@ class Terminal:
             marker=marker.icon,
             marker_style=marker.color,
             detail=detail or "",
+            scope=result.scope or "",
             refresh=True,
         )
 
@@ -457,11 +487,17 @@ def dry_run_step_result(
                 command=step.command,
                 returncode=None,
                 status="removed",
+                scope=step.scope,
             )
         return runtime.terminal.dry_run_step(step.label, step.command, action="would remove")
 
     if runtime.terminal.json_output:
-        return StepResult(label=step.label, command=step.command, returncode=None)
+        return StepResult(
+            label=step.label,
+            command=step.command,
+            returncode=None,
+            scope=step.scope,
+        )
     return runtime.terminal.dry_run_step(step.label, step.command, action=dry_run_action)
 
 
@@ -472,7 +508,12 @@ async def execute_skill_step(
     default_status: str | None,
 ) -> StepResult:
     if step.remove_path is not None:
-        return runtime.terminal.execute_remove_step(step.label, step.command, step.remove_path)
+        return runtime.terminal.execute_remove_step(
+            step.label,
+            step.command,
+            step.remove_path,
+            scope=step.scope,
+        )
     return await runtime.terminal.execute_step(
         step.label,
         step.command,
@@ -480,6 +521,7 @@ async def execute_skill_step(
         outcome=step.outcome,
         executor=step.executor,
         default_status=default_status,
+        scope=step.scope,
     )
 
 
