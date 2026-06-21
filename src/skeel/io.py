@@ -334,12 +334,12 @@ class Terminal:
     def live_progress_enabled(self) -> bool:
         return self.error_console.is_interactive
 
-    def progress(self) -> Progress:
+    def progress(self, *, transient: bool = False) -> Progress:
         return Progress(
             StepMarkerColumn(),
             StepDescriptionColumn(),
             console=self.error_console,
-            transient=False,
+            transient=transient,
             redirect_stdout=False,
             redirect_stderr=False,
             disable=not self.live_progress_enabled(),
@@ -497,10 +497,11 @@ async def run_serial_step(
         runtime.terminal.render_step_result(result)
         return result
 
-    with runtime.terminal.progress() as progress:
+    with runtime.terminal.progress(transient=True) as progress:
         task_id = progress.add_task(step.label, total=1)
         result = await execute_skill_step(step, runtime, default_status=default_status)
         runtime.terminal.finish_progress_task(progress, task_id, result)
+    runtime.terminal.render_step_result(result)
     return result
 
 
@@ -516,7 +517,7 @@ async def run_parallel_step_group(
     index_lock = asyncio.Lock()
     stop_launching = asyncio.Event()
     progress = (
-        runtime.terminal.progress()
+        runtime.terminal.progress(transient=True)
         if not runtime.terminal.json_output and runtime.terminal.live_progress_enabled()
         else None
     )
@@ -554,7 +555,7 @@ async def run_parallel_step_group(
             await run_workers()
 
     ordered_results = [result for result in results if result is not None]
-    if not runtime.terminal.json_output and progress is None:
+    if not runtime.terminal.json_output:
         for result in ordered_results:
             runtime.terminal.render_step_result(result)
     return ordered_results, first_failure_code(ordered_results)
