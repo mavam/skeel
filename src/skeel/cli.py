@@ -213,18 +213,15 @@ def prefer_manifest_context(candidate: ManifestContext, current: ManifestContext
 
 def select_manifest_contexts(command: CommonOptions) -> ManifestSelection:
     contexts: dict[SelectionKey, ManifestContext] = {}
-    context_keys: list[SelectionKey] = []
     missing_paths: dict[SelectionKey, Path] = {}
-    missing_keys: list[SelectionKey] = []
     for scope in manifest_scopes(command):
         runtime = build_runtime_for_scope(command, scope=scope)
         key = selection_key(runtime)
         manifest = load_runtime_manifest(runtime)
         if manifest is None:
-            if key not in contexts and key not in missing_paths:
-                missing_paths[key] = runtime.manifest_path
-                missing_keys.append(key)
-            elif scope == "user":
+            # Only record a missing path for a key we have not resolved yet,
+            # preferring the user-scope path when scopes collapse onto one key.
+            if key not in contexts and (key not in missing_paths or scope == "user"):
                 missing_paths[key] = runtime.manifest_path
             continue
 
@@ -232,13 +229,12 @@ def select_manifest_contexts(command: CommonOptions) -> ManifestSelection:
         missing_paths.pop(key, None)
         if key not in contexts:
             contexts[key] = context
-            context_keys.append(key)
         elif prefer_manifest_context(context, contexts[key]):
             contexts[key] = context
 
     return ManifestSelection(
-        contexts=tuple(contexts[key] for key in context_keys if key in contexts),
-        missing_paths=tuple(missing_paths[key] for key in missing_keys if key in missing_paths),
+        contexts=tuple(contexts.values()),
+        missing_paths=tuple(missing_paths.values()),
     )
 
 

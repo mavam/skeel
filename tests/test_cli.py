@@ -500,6 +500,17 @@ sources:
     ]
 
 
+def test_list_reports_single_missing_manifest_at_home(tmp_path, capsys, monkeypatch) -> None:
+    home = tmp_path
+    monkeypatch.chdir(home)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    assert main(["list"]) == 0
+
+    output = capsys.readouterr().out
+    assert output.count("no manifest at") == 1
+
+
 def test_diff_matches_namespaced_installed_skills_by_basename(monkeypatch) -> None:
     manifest = Manifest(
         path=Path("manifest.yaml"),
