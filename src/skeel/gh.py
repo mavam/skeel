@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
@@ -48,6 +48,7 @@ class SkillStep:
     command: Command
     remove_path: Path | None = None
     kind: Literal["command", "remove"] = "command"
+    scope: str | None = None
     outcome: OutcomeFactory | None = None
     executor: StepExecutor | None = None
     parallel: bool = True
@@ -282,6 +283,13 @@ def matching_desired_install(
     return None
 
 
+def scoped_steps(steps: Sequence[SkillStep], scope: str | None) -> list[SkillStep]:
+    """Stamp every step from a manifest context with its scope for display."""
+    if scope is None:
+        return list(steps)
+    return [replace(step, scope=scope) for step in steps]
+
+
 def update_steps(
     installed: Sequence[InstalledSkill],
     options: GhOptions,
@@ -369,10 +377,8 @@ def fast_update_outcome(skill: InstalledSkill) -> OutcomeFactory:
 def version_transition(before: SkillProvenance, after: SkillProvenance) -> str | None:
     before_label = before.version_label
     after_label = after.version_label
-    if not before_label and not after_label:
-        return None
     if before_label == after_label:
-        return before_label
+        return None
     return f"{before_label or 'unknown'} → {after_label or 'unknown'}"
 
 

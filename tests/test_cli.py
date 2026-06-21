@@ -354,6 +354,29 @@ sources:
     assert [skill.name for skill in manifest.sources[0].skills] == ["beta-skill"]
 
 
+def test_remove_human_output_marks_default_user_scope(tmp_path, capsys, monkeypatch) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    (home / ".agents").mkdir(parents=True)
+    project.mkdir()
+    (home / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  example/skills:
+    - alpha-skill
+    - beta-skill
+""".strip()
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    assert main(["remove", "alpha-skill"]) == 0
+
+    line = capsys.readouterr().out.strip()
+    assert line.startswith("✔︎ alpha-skill example/skills")
+    assert line.endswith(" ⌂")
+
+
 def test_remove_requires_scope_when_default_matches_project_and_user(
     tmp_path, capsys, monkeypatch
 ) -> None:
@@ -468,6 +491,74 @@ sources:
         ("user", "anthropics/skills@skill-creator", "installed"),
         ("user", "cloudflare/skills@wrangler", "missing"),
         ("user", "mavam/quarto-brief@quarto", "installed"),
+    ]
+
+
+def test_detail_text_appends_house_only_for_user_scope() -> None:
+    from skeel.io import detail_text
+
+    # User scope: the house follows the (styled) version, separated by a space.
+    assert detail_text("main@old → main@new", scope="user").plain == "main@new ⌂"
+    # User scope with no version detail: just the house, no leading space.
+    assert detail_text(None, scope="user").plain == "⌂"
+    # Project (and unscoped) output never shows the marker.
+    assert detail_text("main@old → main@new", scope="project").plain == "main@new"
+    assert detail_text(None, scope="project").plain == ""
+
+
+def test_status_text_renders_scope_marker_without_detail() -> None:
+    terminal = Terminal()
+    from skeel.io import MARKER_SUCCESS
+
+    text = terminal.status_text(MARKER_SUCCESS, "cloudflare/skills@wrangler", scope="user")
+    assert text.plain.endswith(" ⌂")
+
+    text = terminal.status_text(MARKER_SUCCESS, "cloudflare/skills@wrangler", scope="project")
+    assert "⌂" not in text.plain
+
+
+def test_diff_marks_user_scope_across_project_and_user_manifests(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    (home / ".agents").mkdir(parents=True)
+    (project / ".agents").mkdir(parents=True)
+    (project / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  tenzir/skills:
+    - tenzir-docs
+""".strip()
+    )
+    (home / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  cloudflare/skills:
+    - wrangler
+""".strip()
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    async def fake_installed_skills(options, runner):
+        return ()
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "diff"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert [(skill["scope"], skill["name"]) for skill in payload["missing"]] == [
+        ("project", "tenzir-docs"),
+        ("user", "wrangler"),
+    ]
+    assert payload["in_sync"] is False
+
+    # The human output marks the user-scope row with the house, project stays bare.
+    assert main(["diff"]) == 1
+    assert capsys.readouterr().out.splitlines() == [
+        "+ tenzir-docs tenzir/skills",
+        "+ wrangler cloudflare/skills ⌂",
     ]
 
 
@@ -608,6 +699,35 @@ sources:
     assert "failed to install skill: openclaw/gogcli@gog" in captured.err
     assert "process stdout" not in captured.out + captured.err
     assert "process stderr" in captured.err
+
+
+def test_run_steps_carries_step_scope_into_results(tmp_path: Path) -> None:
+    class Runner:
+        async def run(self, command, **kwargs):
+            return ProcessResult(command=command, returncode=0)
+
+    runtime = Runtime(
+        manifest_path=Path("manifest.yaml"),
+        manifest_required=False,
+        options=GhOptions(directory=tmp_path),
+        runner=Runner(),
+        terminal=Terminal(json_output=True),
+    )
+    target = tmp_path / "obsolete"
+    target.mkdir()
+    steps = (
+        SkillStep(label="install", command=["install"], scope="user"),
+        SkillStep(label="remove", command=["remove"], remove_path=target, scope="user"),
+    )
+
+    results, exit_code = asyncio.run(
+        run_steps(steps, runtime, dry_run=False, dry_run_action="would install")
+    )
+
+    assert exit_code == 0
+    assert [result.scope for result in results] == ["user", "user"]
+    # The scope survives JSON serialization too.
+    assert all(result.json()["scope"] == "user" for result in results)
 
 
 def test_run_steps_executes_parallel_commands_concurrently(tmp_path: Path) -> None:

@@ -13,8 +13,10 @@ from clypi import ClypiConfig, ClypiFormatter, Command, Positional, arg, configu
 from . import __version__
 from .gh import (
     GhOptions,
+    InstalledSkill,
     SkillStep,
     installed_skills,
+    scoped_steps,
     source_skill_label,
     update_steps,
 )
@@ -23,7 +25,6 @@ from .io import (
     MARKER_NOOP,
     MARKER_PREVIEW,
     MARKER_SUCCESS,
-    SCOPE_USER,
     ProcessRunner,
     StepResult,
     Terminal,
@@ -31,6 +32,7 @@ from .io import (
     run_steps,
 )
 from .manifest import (
+    DesiredSkill,
     Manifest,
     load_manifest,
     manifest_path,
@@ -246,24 +248,29 @@ async def diff_skills(
     return diff_installed_skills(manifest, await installed_skills(options, runner))
 
 
-def diff_json(diff: SkillDiff) -> dict[str, object]:
+def diff_json(
+    missing: Sequence[tuple[DesiredSkill, str]],
+    extra: Sequence[tuple[InstalledSkill, str]],
+) -> dict[str, object]:
     return {
         "missing": [
             {
                 "name": skill.name,
                 "source": skill.source,
+                "scope": scope,
             }
-            for skill in diff.missing
+            for skill, scope in missing
         ],
         "extra": [
             {
                 "name": skill.name,
                 "path": str(skill.path),
                 "source": skill.source_url or None,
+                "scope": scope,
             }
-            for skill in diff.extra
+            for skill, scope in extra
         ],
-        "in_sync": diff.in_sync,
+        "in_sync": not missing and not extra,
     }
 
 
@@ -348,31 +355,31 @@ async def command_diff(command: CommonOptions) -> int:
     terminal = Terminal(json_output=command.json)
     selection = select_manifest_contexts(command)
     if not selection.found_manifest:
-        empty_diff = SkillDiff(missing=(), extra=())
         if command.json:
-            terminal.json(diff_json(empty_diff))
+            terminal.json(diff_json([], []))
         else:
             for path in selection.missing_paths:
                 terminal.no_manifest(path)
         return 0
 
-    diffs = [
-        await diff_skills(context.manifest, context.runtime.options, context.runtime.runner)
-        for context in selection.contexts
-    ]
-    diff = SkillDiff(
-        missing=tuple(skill for current in diffs for skill in current.missing),
-        extra=tuple(skill for current in diffs for skill in current.extra),
-    )
+    missing: list[tuple[DesiredSkill, str]] = []
+    extra: list[tuple[InstalledSkill, str]] = []
+    for context in selection.contexts:
+        current = await diff_skills(
+            context.manifest, context.runtime.options, context.runtime.runner
+        )
+        missing.extend((skill, context.scope) for skill in current.missing)
+        extra.extend((skill, context.scope) for skill in current.extra)
+
     if command.json:
-        terminal.json(diff_json(diff))
+        terminal.json(diff_json(missing, extra))
     else:
         terminal.diff(
-            [(skill.name, skill.source) for skill in diff.missing],
-            [(skill.name, skill.source_url or None) for skill in diff.extra],
+            [(skill.name, skill.source, scope) for skill, scope in missing],
+            [(skill.name, skill.source_url or None, scope) for skill, scope in extra],
             manifest_path=selection.contexts[0].manifest.path,
         )
-    return 1 if not diff.in_sync else 0
+    return 0 if not missing and not extra else 1
 
 
 async def command_list(command: CommonOptions) -> int:
@@ -393,15 +400,11 @@ async def command_list(command: CommonOptions) -> int:
         return 0
 
     for row in rows:
-        detail_parts: list[str] = []
-        if row.version:
-            detail_parts.append(row.version)
-        if row.scope == "user":
-            detail_parts.append(SCOPE_USER)
         terminal.status_line(
             MARKER_SUCCESS if row.status == "installed" else MARKER_FAILURE,
             row.label,
-            detail=" ".join(detail_parts) or None,
+            detail=row.version,
+            scope=row.scope,
         )
     return 0
 
@@ -431,6 +434,7 @@ async def command_apply(command: ApplyOptions) -> int:
             context.runtime,
             reinstall=command.reinstall,
             selector=selector,
+            scope=context.scope,
         )
         context_results, context_exit_code = await run_apply_steps(command, context.runtime, steps)
         results.extend(context_results)
@@ -445,8 +449,9 @@ async def apply_manifest(
     manifest: Manifest,
     *,
     reinstall: bool = False,
+    scope: str | None = None,
 ) -> int:
-    steps = await apply_steps(manifest, runtime, reinstall=reinstall)
+    steps = await apply_steps(manifest, runtime, reinstall=reinstall, scope=scope)
     results, exit_code = await run_apply_steps(command, runtime, steps)
     return finish_apply_results(
         command,
@@ -462,15 +467,17 @@ async def apply_steps(
     *,
     reinstall: bool = False,
     selector: ApplySelector | None = None,
+    scope: str | None = None,
 ) -> list[SkillStep]:
     installed = () if reinstall else await installed_skills(runtime.options, runtime.runner)
-    return apply_plan(
+    plan = apply_plan(
         manifest,
         runtime.options,
         installed,
         reinstall=reinstall,
         selector=selector,
     )
+    return scoped_steps(plan, scope)
 
 
 def apply_selector(command: ApplyOptions) -> ApplySelector | None:
@@ -568,8 +575,9 @@ async def command_add(command: AddOptions) -> int:
             )
         return 0
 
+    scope = single_scope(command)
     if command.json:
-        return await apply_manifest(command, runtime, update.manifest)
+        return await apply_manifest(command, runtime, update.manifest, scope=scope)
 
     add_status_line(
         runtime.terminal,
@@ -577,7 +585,7 @@ async def command_add(command: AddOptions) -> int:
         update.changed,
         manifest_path=runtime.manifest_path,
     )
-    return await apply_manifest(command, runtime, update.manifest)
+    return await apply_manifest(command, runtime, update.manifest, scope=scope)
 
 
 async def command_remove(command: RemoveOptions) -> int:
@@ -616,8 +624,10 @@ async def command_remove(command: RemoveOptions) -> int:
         runtime = context.runtime
         source = target.source
         skill = target.skill
+        scope = context.scope
         manifest_exists = True
     else:
+        scope = single_scope(command)
         manifest_exists = runtime.manifest_path.exists()
         if manifest_exists:
             try:
@@ -661,6 +671,7 @@ async def command_remove(command: RemoveOptions) -> int:
                 command.dry_run,
                 update.changed,
                 manifest_path=runtime.manifest_path,
+                scope=scope,
             )
         return 0
 
@@ -668,7 +679,7 @@ async def command_remove(command: RemoveOptions) -> int:
         if not manifest_exists:
             runtime.terminal.json(run_json(dry_run=command.dry_run, steps=[]))
             return 0
-        return await apply_manifest(command, runtime, update.manifest)
+        return await apply_manifest(command, runtime, update.manifest, scope=scope)
 
     remove_status_line(
         runtime.terminal,
@@ -677,10 +688,11 @@ async def command_remove(command: RemoveOptions) -> int:
         command.dry_run,
         update.changed,
         manifest_path=runtime.manifest_path,
+        scope=scope,
     )
     if not manifest_exists:
         return 0
-    return await apply_manifest(command, runtime, update.manifest)
+    return await apply_manifest(command, runtime, update.manifest, scope=scope)
 
 
 def add_status_line(
@@ -709,6 +721,7 @@ def remove_status_line(
     changed: bool,
     *,
     manifest_path: Path,
+    scope: str | None = None,
 ) -> None:
     if dry_run:
         marker = MARKER_PREVIEW if changed else MARKER_NOOP
@@ -718,6 +731,7 @@ def remove_status_line(
         marker,
         add_label(source, skill),
         detail=str(manifest_path),
+        scope=scope,
     )
 
 
@@ -752,10 +766,13 @@ async def command_update(command: UpdateOptions) -> int:
             await installed_skills(context.runtime.options, context.runtime.runner),
             selector,
         )
-        steps = update_steps(
-            installed,
-            context.runtime.options,
-            manifest=manifest,
+        steps = scoped_steps(
+            update_steps(
+                installed,
+                context.runtime.options,
+                manifest=manifest,
+            ),
+            context.scope,
         )
         scope_results, scope_exit_code = await run_steps(
             steps,
