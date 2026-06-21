@@ -642,6 +642,7 @@ async def command_remove(command: RemoveOptions) -> int:
                 command.dry_run,
                 update.changed,
                 manifest_path=runtime.manifest_path,
+                scope=scope,
             )
         return 0
 
@@ -658,6 +659,7 @@ async def command_remove(command: RemoveOptions) -> int:
         command.dry_run,
         update.changed,
         manifest_path=runtime.manifest_path,
+        scope=scope,
     )
     if not manifest_exists:
         return 0
@@ -690,6 +692,7 @@ def remove_status_line(
     changed: bool,
     *,
     manifest_path: Path,
+    scope: str | None = None,
 ) -> None:
     if dry_run:
         marker = MARKER_PREVIEW if changed else MARKER_NOOP
@@ -699,6 +702,7 @@ def remove_status_line(
         marker,
         add_label(source, skill),
         detail=str(manifest_path),
+        scope=scope,
     )
 
 

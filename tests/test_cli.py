@@ -354,6 +354,29 @@ sources:
     assert [skill.name for skill in manifest.sources[0].skills] == ["beta-skill"]
 
 
+def test_remove_human_output_marks_default_user_scope(tmp_path, capsys, monkeypatch) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    (home / ".agents").mkdir(parents=True)
+    project.mkdir()
+    (home / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  example/skills:
+    - alpha-skill
+    - beta-skill
+""".strip()
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    assert main(["remove", "alpha-skill"]) == 0
+
+    line = capsys.readouterr().out.strip()
+    assert line.startswith("✔︎ alpha-skill example/skills")
+    assert line.endswith(" ⌂")
+
+
 def test_remove_requires_scope_when_default_matches_project_and_user(
     tmp_path, capsys, monkeypatch
 ) -> None:
