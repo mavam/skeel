@@ -8,6 +8,7 @@ from skeel.gh import GhOptions, InstalledSkill, SkillStep, read_skill_provenance
 from skeel.io import (
     ProcessResult,
     ProcessRunner,
+    StepOutcome,
     Terminal,
     run_steps,
 )
@@ -846,7 +847,7 @@ def test_run_steps_executes_parallel_commands_concurrently(tmp_path: Path) -> No
     assert runner.max_active > 1
 
 
-def test_run_steps_can_remove_completed_live_progress_tasks(tmp_path: Path) -> None:
+def test_run_steps_can_remove_completed_current_progress_tasks(tmp_path: Path) -> None:
     class Runner:
         async def run(self, command, **kwargs):
             assert kwargs == {"capture_output": True}
@@ -855,6 +856,7 @@ def test_run_steps_can_remove_completed_live_progress_tasks(tmp_path: Path) -> N
     class RecordingProgress:
         def __init__(self) -> None:
             self.next_task = 0
+            self.descriptions: dict[int, str] = {}
             self.removed: list[int] = []
 
         def __enter__(self):
@@ -864,9 +866,10 @@ def test_run_steps_can_remove_completed_live_progress_tasks(tmp_path: Path) -> N
             pass
 
         def add_task(self, description, *, total):
-            del description, total
+            del total
             task_id = self.next_task
             self.next_task += 1
+            self.descriptions[task_id] = description
             return task_id
 
         def update(self, task_id, **kwargs) -> None:
@@ -896,8 +899,16 @@ def test_run_steps_can_remove_completed_live_progress_tasks(tmp_path: Path) -> N
         terminal=terminal,
     )
     steps = (
-        SkillStep(label="skill-1", command=["skill-1"]),
-        SkillStep(label="skill-2", command=["skill-2"]),
+        SkillStep(
+            label="current",
+            command=["current"],
+            outcome=lambda result: StepOutcome(status="current"),
+        ),
+        SkillStep(
+            label="skipped",
+            command=["skipped"],
+            outcome=lambda result: StepOutcome(status="skipped"),
+        ),
     )
 
     results, exit_code = asyncio.run(
@@ -907,13 +918,17 @@ def test_run_steps_can_remove_completed_live_progress_tasks(tmp_path: Path) -> N
             dry_run=False,
             dry_run_action="would install",
             render=False,
-            keep_progress_tasks=False,
+            remove_current_progress_tasks=True,
         )
     )
 
     assert exit_code == 0
-    assert [result.label for result in results] == ["skill-1", "skill-2"]
-    assert sorted(terminal.recording_progress.removed) == [0, 1]
+    assert [result.label for result in results] == ["current", "skipped"]
+    removed_labels = [
+        terminal.recording_progress.descriptions[task_id]
+        for task_id in terminal.recording_progress.removed
+    ]
+    assert removed_labels == ["current"]
 
 
 def test_run_steps_stops_launching_after_apply_failure(

@@ -585,7 +585,7 @@ async def run_serial_step(
     *,
     default_status: str | None,
     render: bool = True,
-    keep_progress_tasks: bool = True,
+    remove_current_progress_tasks: bool = False,
 ) -> StepResult:
     if runtime.terminal.json_output:
         return await execute_skill_step(step, runtime, default_status=default_status)
@@ -600,7 +600,10 @@ async def run_serial_step(
         task_id = progress.add_task(step.label, total=1)
         result = await execute_skill_step(step, runtime, default_status=default_status)
         runtime.terminal.finish_progress_task(progress, task_id, result)
-        if not keep_progress_tasks:
+        if should_remove_progress_task(
+            result,
+            remove_current_progress_tasks=remove_current_progress_tasks,
+        ):
             progress.remove_task(task_id)
     if render:
         runtime.terminal.render_step_result(result)
@@ -614,7 +617,7 @@ async def run_parallel_step_group(
     default_status: str | None,
     keep_going: bool,
     render: bool = True,
-    keep_progress_tasks: bool = True,
+    remove_current_progress_tasks: bool = False,
 ) -> tuple[list[StepResult], int]:
     results: list[StepResult | None] = [None] * len(steps)
     next_index = 0
@@ -645,7 +648,10 @@ async def run_parallel_step_group(
             results[index] = result
             if progress is not None and task_id is not None:
                 runtime.terminal.finish_progress_task(progress, task_id, result)
-                if not keep_progress_tasks:
+                if should_remove_progress_task(
+                    result,
+                    remove_current_progress_tasks=remove_current_progress_tasks,
+                ):
                     progress.remove_task(task_id)
             if step_failed(result) and not keep_going:
                 stop_launching.set()
@@ -667,6 +673,14 @@ async def run_parallel_step_group(
     return ordered_results, first_failure_code(ordered_results)
 
 
+def should_remove_progress_task(
+    result: StepResult,
+    *,
+    remove_current_progress_tasks: bool,
+) -> bool:
+    return remove_current_progress_tasks and not step_failed(result) and result.status == "current"
+
+
 async def run_steps(
     steps: Sequence[SkillStepLike],
     runtime: StepRuntime,
@@ -676,7 +690,7 @@ async def run_steps(
     default_status: str | None = None,
     keep_going: bool = False,
     render: bool = True,
-    keep_progress_tasks: bool = True,
+    remove_current_progress_tasks: bool = False,
 ) -> tuple[list[StepResult], int]:
     results: list[StepResult] = []
     exit_code = 0
@@ -699,7 +713,7 @@ async def run_steps(
                 default_status=default_status,
                 keep_going=keep_going,
                 render=render,
-                keep_progress_tasks=keep_progress_tasks,
+                remove_current_progress_tasks=remove_current_progress_tasks,
             )
             results.extend(group_results)
             if group_exit_code and not exit_code:
@@ -714,7 +728,7 @@ async def run_steps(
             runtime,
             default_status=default_status,
             render=render,
-            keep_progress_tasks=keep_progress_tasks,
+            remove_current_progress_tasks=remove_current_progress_tasks,
         )
         results.append(result)
         index += 1

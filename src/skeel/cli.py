@@ -791,7 +791,7 @@ async def command_update(command: UpdateOptions) -> int:
             dry_run_action="would update",
             keep_going=True,
             render=False,
-            keep_progress_tasks=command.verbose,
+            remove_current_progress_tasks=not command.verbose,
         )
         results.extend(scope_results)
         if scope_exit_code and not exit_code:
