@@ -341,6 +341,12 @@ def test_version_transition_hides_detail_for_unchanged_versions() -> None:
     assert version_transition(provenance, provenance) is None
 
 
+def test_detail_text_renders_full_version_transition() -> None:
+    from skeel.io import detail_text
+
+    assert detail_text("main@old1234 → main@new1234").plain == "main@old1234 → main@new1234"
+
+
 def test_update_outcome_detail_carries_only_version_transition(tmp_path: Path) -> None:
     skill_path = tmp_path / "wrangler"
     write_skill(

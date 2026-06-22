@@ -352,13 +352,25 @@ def update_status(result: ProcessResult) -> str:
     return "updated"
 
 
+def skipped_update_detail(result: ProcessResult) -> str:
+    output = "\n".join(part for part in [result.stdout, result.stderr] if part)
+    if "has no GitHub metadata" in output:
+        return "missing GitHub metadata, skipped"
+    if "pinned" in output and "skip" in output.lower():
+        return "pinned, skipped"
+    return "skipped"
+
+
 def update_outcome(skill: InstalledSkill) -> OutcomeFactory:
     before = skill.provenance
 
     def outcome(result: ProcessResult) -> StepOutcome:
         status = update_status(result)
         after = read_skill_provenance(skill.path)
-        return StepOutcome(status=status, detail=version_transition(before, after))
+        detail = version_transition(before, after)
+        if detail is None and status == "skipped":
+            detail = skipped_update_detail(result)
+        return StepOutcome(status=status, detail=detail)
 
     return outcome
 

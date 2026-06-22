@@ -106,6 +106,15 @@ def json_arg(*, inherited: bool = False) -> bool:
     )
 
 
+def verbose_arg(*, inherited: bool = False) -> bool:
+    return arg(
+        False,
+        short="v",
+        inherited=inherited,
+        help="Show every update row, including current skills.",
+    )
+
+
 class CommonOptions(Protocol):
     manifest: str | None
     scope: str | None
@@ -122,6 +131,7 @@ class ApplyOptions(CommonOptions, Protocol):
 class UpdateOptions(CommonOptions, Protocol):
     source: str | None
     skill: str | None
+    verbose: bool
 
 
 class AddOptions(CommonOptions, Protocol):
@@ -780,6 +790,7 @@ async def command_update(command: UpdateOptions) -> int:
             dry_run=command.dry_run,
             dry_run_action="would update",
             keep_going=True,
+            render=False,
         )
         results.extend(scope_results)
         if scope_exit_code and not exit_code:
@@ -791,7 +802,10 @@ async def command_update(command: UpdateOptions) -> int:
 
     if command.json:
         terminal.json(run_json(dry_run=command.dry_run, steps=results))
-    elif exit_code:
+    elif not command.dry_run:
+        terminal.render_update_summary(results, verbose=command.verbose)
+
+    if not command.json and exit_code:
         failed = failed_steps(results)
         labels = ", ".join(step.label for step in failed)
         terminal.error(f"failed to update skills: {labels}" if failed else "update failed")
@@ -939,6 +953,7 @@ class Update(SkeelCommand):
     manifest: str | None = manifest_arg(inherited=True)
     scope: str | None = scope_arg(inherited=True)
     dry_run: bool = dry_run_arg(inherited=True)
+    verbose: bool = verbose_arg()
     json: bool = json_arg(inherited=True)
 
     @override
