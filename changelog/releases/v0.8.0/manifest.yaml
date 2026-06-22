@@ -1,0 +1,9 @@
+created: 2026-06-22
+title: Clearer skill update output
+intro: >-
+  This release makes skeel update output easier to scan and more reliable across project
+  and user scopes. It also fixes non-interactive GitHub skill updates and avoids duplicate
+  unscoped update checks from the home directory.
+source:
+  mode: sync-stable-queue
+  previous_stable: v0.7.1
