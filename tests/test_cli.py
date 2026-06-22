@@ -1035,6 +1035,7 @@ sources:
         "tenzir-ecs",
         "--dir",
         str(target),
+        "--all",
     ]
 
 
