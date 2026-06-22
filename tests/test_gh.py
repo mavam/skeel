@@ -212,7 +212,7 @@ name: wrangler
     )
 
     assert step.label == "cloudflare/skills@wrangler"
-    assert step.command == ["gh", "skill", "update", "wrangler", "--dir", str(tmp_path)]
+    assert step.command == ["gh", "skill", "update", "wrangler", "--dir", str(tmp_path), "--all"]
     assert step.outcome is not None
     outcome = step.outcome(ProcessResult(command=[], returncode=0, stdout="Updated wrangler"))
     assert outcome.status == "updated"

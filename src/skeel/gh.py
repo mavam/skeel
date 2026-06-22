@@ -333,6 +333,7 @@ def update_steps(
                     skill.update_name,
                     "--dir",
                     str(options.directory),
+                    "--all",
                 ],
                 outcome=update_outcome(skill),
             )
