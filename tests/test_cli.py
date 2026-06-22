@@ -450,9 +450,10 @@ sources:
 
     assert main(["remove", "alpha-skill"]) == 0
 
-    line = " ".join(capsys.readouterr().out.split())
+    output = capsys.readouterr().out
+    line = " ".join(output.split())
     assert line.startswith("✔︎ alpha-skill example/skills ⌂ ")
-    assert ".agents/skills.yaml" in line
+    assert ".agents/skills.yaml" in "".join(output.split())
 
 
 def test_remove_requires_scope_when_default_matches_project_and_user(
