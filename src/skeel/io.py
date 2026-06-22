@@ -427,31 +427,25 @@ class Terminal:
         self.step_status_line(marker, result.label, detail=detail, scope=result.scope)
 
     def render_update_summary(self, results: Sequence[StepResult], *, verbose: bool) -> None:
-        failed = [result for result in results if step_failed(result)]
-        updated = sorted(
-            (
-                result
-                for result in results
-                if not step_failed(result) and result.status == "updated"
-            ),
-            key=lambda result: label_sort_key(result.label),
-        )
-        skipped = sorted(
-            (
-                result
-                for result in results
-                if not step_failed(result) and result.status == "skipped"
-            ),
-            key=lambda result: label_sort_key(result.label),
-        )
-        current = sorted(
-            (
-                result
-                for result in results
-                if not step_failed(result) and result.status == "current"
-            ),
-            key=lambda result: label_sort_key(result.label),
-        )
+        failed: list[StepResult] = []
+        by_status: dict[str, list[StepResult]] = {
+            "updated": [],
+            "skipped": [],
+            "current": [],
+        }
+        for result in results:
+            if step_failed(result):
+                failed.append(result)
+                continue
+            status = result.status
+            if status is not None and status in by_status:
+                by_status[status].append(result)
+
+        for bucket in by_status.values():
+            bucket.sort(key=lambda result: label_sort_key(result.label))
+        updated = by_status["updated"]
+        skipped = by_status["skipped"]
+        current = by_status["current"]
 
         rows = updated + (current if verbose else []) + skipped
         for result in rows:

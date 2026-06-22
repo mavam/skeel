@@ -363,10 +363,6 @@ def classify_update_output(output: str) -> UpdateClassification:
     return UpdateClassification("updated")
 
 
-def update_status(result: ProcessResult) -> UpdateStatus:
-    return classify_update_output(update_output(result)).status
-
-
 def update_outcome(skill: InstalledSkill) -> OutcomeFactory:
     before = skill.provenance
 
