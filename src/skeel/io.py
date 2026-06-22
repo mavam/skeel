@@ -29,7 +29,7 @@ class OutputMarker:
 
 
 MARKER_SUCCESS = OutputMarker("✔︎", "green")
-MARKER_SKIPPED = OutputMarker("✔︎", "yellow")
+MARKER_SKIPPED = OutputMarker("·", "bright_black")
 MARKER_FAILURE = OutputMarker("✘", "red")
 MARKER_UPDATED = OutputMarker("↑", "green")
 MARKER_CURRENT = OutputMarker("·", "bright_black")
@@ -461,7 +461,7 @@ class Terminal:
 
         summary = [
             (len(updated), "updated", MARKER_UPDATED.color),
-            (len(skipped), "skipped", MARKER_SKIPPED.color),
+            (len(skipped), "skipped", "yellow"),
             (len(failed), "failed", MARKER_FAILURE.color),
             (len(current), "current", MARKER_CURRENT.color),
         ]
