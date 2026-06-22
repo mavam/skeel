@@ -450,9 +450,9 @@ sources:
 
     assert main(["remove", "alpha-skill"]) == 0
 
-    line = capsys.readouterr().out.strip()
-    assert line.startswith("✔︎ alpha-skill example/skills")
-    assert line.endswith(" ⌂")
+    line = " ".join(capsys.readouterr().out.split())
+    assert line.startswith("✔︎ alpha-skill example/skills ⌂ ")
+    assert ".agents/skills.yaml" in line
 
 
 def test_remove_requires_scope_when_default_matches_project_and_user(
@@ -572,16 +572,11 @@ sources:
     ]
 
 
-def test_detail_text_appends_house_only_for_user_scope() -> None:
+def test_detail_text_renders_version_transition_without_scope() -> None:
     from skeel.io import detail_text
 
-    # User scope: the house follows the (styled) version, separated by a space.
-    assert detail_text("main@old → main@new", scope="user").plain == "main@old → main@new ⌂"
-    # User scope with no version detail: just the house, no leading space.
-    assert detail_text(None, scope="user").plain == "⌂"
-    # Project (and unscoped) output never shows the marker.
-    assert detail_text("main@old → main@new", scope="project").plain == "main@old → main@new"
-    assert detail_text(None, scope="project").plain == ""
+    assert detail_text("main@old → main@new").plain == "main@old → main@new"
+    assert detail_text(None).plain == ""
 
 
 def test_status_text_renders_scope_marker_without_detail() -> None:
@@ -593,6 +588,20 @@ def test_status_text_renders_scope_marker_without_detail() -> None:
 
     text = terminal.status_text(MARKER_SUCCESS, "cloudflare/skills@wrangler", scope="project")
     assert "⌂" not in text.plain
+
+
+def test_status_text_renders_scope_marker_before_detail() -> None:
+    terminal = Terminal()
+    from skeel.io import MARKER_SKIPPED
+
+    text = terminal.status_text(
+        MARKER_SKIPPED,
+        "downstairs-dawgs/clacks@clacks",
+        detail="missing GitHub metadata",
+        scope="user",
+    )
+
+    assert text.plain == "! clacks downstairs-dawgs/clacks ⌂ missing GitHub metadata"
 
 
 def test_diff_marks_user_scope_across_project_and_user_manifests(
@@ -1148,7 +1157,7 @@ def test_update_summary_renders_changed_rows_and_tally(tmp_path, capsys, monkeyp
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.splitlines() == [
-        "↑ tenzir-ship tenzir/skills main@9f3e1a2 → main@12c7aa3 ⌂",
+        "↑ tenzir-ship tenzir/skills ⌂ main@9f3e1a2 → main@12c7aa3",
         "",
         "1 updated",
         "27 current",
@@ -1218,7 +1227,7 @@ def test_update_verbose_lists_current_rows(tmp_path, capsys, monkeypatch) -> Non
     assert main(["--manifest", str(path), "--scope", "user", "update", "-v"]) == 0
 
     err = capsys.readouterr().err
-    assert "↑ tenzir-ship tenzir/skills main@9f3e1a2 → main@12c7aa3 ⌂" in err
+    assert "↑ tenzir-ship tenzir/skills ⌂ main@9f3e1a2 → main@12c7aa3" in err
     assert "· clacks downstairs-dawgs/clacks ⌂" in err
     assert "· gog openclaw/gogcli ⌂" in err
     assert "1 updated" in err
@@ -1262,8 +1271,8 @@ def test_update_summary_counts_skips_and_failures(tmp_path, capsys, monkeypatch)
     assert main(["--manifest", str(path), "--scope", "user", "update"]) == 7
 
     err = capsys.readouterr().err
-    assert "↑ tenzir-ship tenzir/skills main@9f3e1a2 → main@12c7aa3 ⌂" in err
-    assert "! caveman mattpocock/skills pinned ⌂" in err
+    assert "↑ tenzir-ship tenzir/skills ⌂ main@9f3e1a2 → main@12c7aa3" in err
+    assert "! caveman mattpocock/skills ⌂ pinned" in err
     assert "1 updated" in err
     assert "1 skipped" in err
     assert "1 failed" in err

@@ -71,7 +71,8 @@ By default, `list`, `diff`, `apply`, and `update` read both
 `~/.agents/skills.yaml`. Use `--scope project` or `--scope user` to operate on
 one scope. Human output uses the first column for the marker, the second column
 for the skill name, the third column for the source, and a muted suffix for
-versions or paths. User-scope skills include a muted `⌂` suffix.
+versions, paths, or diagnostic details. User-scope skills include a muted `⌂`
+after the source.
 
 For scripts, pass `--json` to `add`, `apply`, `diff`, `list`, `path`, `remove`,
 or `update` to emit one machine-readable object on stdout.
@@ -87,9 +88,9 @@ uvx skeel list
 ```
 
 ```text
-✔︎ skill-creator anthropics/skills main@3cf9a8d ⌂
-✔︎ wrangler cloudflare/skills main@45cc198 ⌂
-✔︎ quarto-brief mavam/quarto-brief main@e89c555 ⌂
+✔︎ skill-creator anthropics/skills ⌂ main@3cf9a8d
+✔︎ wrangler cloudflare/skills ⌂ main@45cc198
+✔︎ quarto-brief mavam/quarto-brief ⌂ main@e89c555
 ✔︎ tenzir-docs tenzir/skills main@a5d04ab
 ✘ gog openclaw/gogcli
 ```

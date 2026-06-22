@@ -150,7 +150,7 @@ def scope_marker(scope: str | None) -> str | None:
     return SCOPE_USER if scope == "user" else None
 
 
-def detail_text(detail: str | None, *, scope: str | None = None) -> Text:
+def detail_text(detail: str | None) -> Text:
     text = Text()
     if detail:
         if " → " in detail:
@@ -160,12 +160,14 @@ def detail_text(detail: str | None, *, scope: str | None = None) -> Text:
             text.append(after, style=STYLE_NEW_VERSION)
         else:
             text.append(detail, style=STYLE_DETAIL)
+    return text
+
+
+def append_scope_text(text: Text, scope: str | None) -> None:
     marker = scope_marker(scope)
     if marker:
-        if detail:
-            text.append(" ", style=STYLE_DETAIL)
+        text.append(" ", style=STYLE_DETAIL)
         text.append(marker, style=STYLE_DETAIL)
-    return text
 
 
 def label_text(label: str) -> Text:
@@ -206,10 +208,8 @@ class StepDescriptionColumn(ProgressColumn):
         text = label_text(task.description)
         detail = task.fields.get("detail")
         scope = task.fields.get("scope")
-        extra = detail_text(
-            detail if isinstance(detail, str) else None,
-            scope=scope if isinstance(scope, str) else None,
-        )
+        append_scope_text(text, scope if isinstance(scope, str) else None)
+        extra = detail_text(detail if isinstance(detail, str) else None)
         if extra.plain:
             text.append(" ", style=STYLE_DETAIL)
             text.append_text(extra)
@@ -359,7 +359,8 @@ class Terminal:
         text = Text(marker.icon, style=marker.color)
         text.append(" ")
         text.append_text(label_text(label))
-        extra = detail_text(detail, scope=scope)
+        append_scope_text(text, scope)
+        extra = detail_text(detail)
         if extra.plain:
             text.append(" ", style=STYLE_DETAIL)
             text.append_text(extra)
