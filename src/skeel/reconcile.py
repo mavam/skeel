@@ -90,7 +90,7 @@ class SkillDiff:
 @dataclass(frozen=True)
 class ListedSkill:
     scope: str
-    manifest_path: Path
+    manifest_path: Path | None
     name: str
     source: str
     label: str
@@ -98,22 +98,26 @@ class ListedSkill:
     path: Path | None = None
     version: str | None = None
     dynamic: bool = False
+    managed: bool = True
 
     def json(self) -> dict[str, object]:
         payload: dict[str, object] = {
             "scope": self.scope,
-            "manifest": str(self.manifest_path),
             "name": self.name,
             "source": self.source,
             "label": self.label,
             "status": self.status,
         }
+        if self.manifest_path is not None:
+            payload["manifest"] = str(self.manifest_path)
         if self.path is not None:
             payload["path"] = str(self.path)
         if self.version:
             payload["version"] = self.version
         if self.dynamic:
             payload["dynamic"] = True
+        if not self.managed:
+            payload["managed"] = False
         return payload
 
 
@@ -195,6 +199,48 @@ def list_manifest_skills(
                 )
             )
     return tuple(rows)
+
+
+def list_installed_skills(
+    manifest: Manifest | None,
+    installed: Sequence[InstalledSkill],
+    *,
+    scope: str,
+) -> tuple[ListedSkill, ...]:
+    if manifest is None:
+        return unmanaged_installed_skill_rows(installed, scope=scope, manifest_path=None)
+
+    rows = list(list_manifest_skills(manifest, installed, scope=scope))
+    rows.extend(
+        unmanaged_installed_skill_rows(
+            diff_installed_skills(manifest, installed).extra,
+            scope=scope,
+            manifest_path=None,
+        )
+    )
+    return tuple(rows)
+
+
+def unmanaged_installed_skill_rows(
+    installed: Sequence[InstalledSkill],
+    *,
+    scope: str,
+    manifest_path: Path | None,
+) -> tuple[ListedSkill, ...]:
+    return tuple(
+        ListedSkill(
+            scope=scope,
+            manifest_path=manifest_path,
+            name=skill.basename,
+            source=skill.github_source or skill.source_url,
+            label=skill.label,
+            status="installed",
+            path=skill.path,
+            version=skill.version_label,
+            managed=False,
+        )
+        for skill in sorted(installed, key=lambda skill: (skill.label, str(skill.path)))
+    )
 
 
 def apply_plan(

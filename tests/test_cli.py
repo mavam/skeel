@@ -588,6 +588,173 @@ sources:
     ]
 
 
+def test_list_includes_unmanaged_installed_skills_by_default(tmp_path, capsys, monkeypatch) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    (home / ".agents").mkdir(parents=True)
+    (project / ".agents").mkdir(parents=True)
+    (project / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  tenzir/skills:
+    - tenzir-docs
+""".strip()
+    )
+    (home / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  cloudflare/skills:
+    - wrangler
+""".strip()
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    async def fake_installed_skills(options, runner):
+        if options.directory == project / ".agents" / "skills":
+            return (
+                InstalledSkill(name="tenzir-docs", path=options.directory / "tenzir-docs"),
+                InstalledSkill(
+                    name="obsolete-skill",
+                    path=options.directory / "obsolete-skill",
+                    source_url="https://github.com/example/skills",
+                ),
+            )
+        assert options.directory == home / ".agents" / "skills"
+        return (
+            InstalledSkill(name="wrangler", path=options.directory / "wrangler"),
+            InstalledSkill(name="local-only", path=options.directory / "local-only"),
+        )
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "list"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [
+        (
+            skill["scope"],
+            skill["label"],
+            skill["status"],
+            "manifest" in skill,
+            skill.get("managed", True),
+        )
+        for skill in payload["skills"]
+    ] == [
+        ("project", "tenzir/skills@tenzir-docs", "installed", True, True),
+        ("project", "example/skills@obsolete-skill", "installed", False, False),
+        ("user", "cloudflare/skills@wrangler", "installed", True, True),
+        ("user", "local-only", "installed", False, False),
+    ]
+
+
+def test_list_reports_installed_skills_without_manifest(tmp_path, capsys, monkeypatch) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    (home / ".agents" / "skills").mkdir(parents=True)
+    (project / ".agents" / "skills").mkdir(parents=True)
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    async def fake_installed_skills(options, runner):
+        if options.directory == project / ".agents" / "skills":
+            return (InstalledSkill(name="project-only", path=options.directory / "project-only"),)
+        assert options.directory == home / ".agents" / "skills"
+        return (
+            InstalledSkill(
+                name="mavam",
+                path=options.directory / "mavam",
+                source_url="https://github.com/mavam/skills.git",
+            ),
+        )
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "list"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [
+        (skill["scope"], skill["label"], "manifest" in skill, skill.get("managed", True))
+        for skill in payload["skills"]
+    ] == [
+        ("project", "project-only", False, False),
+        ("user", "mavam/skills@mavam", False, False),
+    ]
+
+
+def test_list_human_output_groups_project_and_user_rows(tmp_path, capsys, monkeypatch) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    (home / ".agents").mkdir(parents=True)
+    (project / ".agents").mkdir(parents=True)
+    (project / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  tenzir/skills:
+    - tenzir-docs
+""".strip()
+    )
+    (home / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  cloudflare/skills:
+    - wrangler
+""".strip()
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    async def fake_installed_skills(options, runner):
+        if options.directory == project / ".agents" / "skills":
+            return (InstalledSkill(name="tenzir-docs", path=options.directory / "tenzir-docs"),)
+        assert options.directory == home / ".agents" / "skills"
+        return (InstalledSkill(name="wrangler", path=options.directory / "wrangler"),)
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["list"]) == 0
+
+    assert capsys.readouterr().out.splitlines() == [
+        "project",
+        "✔︎ tenzir-docs tenzir/skills",
+        "",
+        "user",
+        "✔︎ wrangler cloudflare/skills ⌂",
+    ]
+
+
+def test_list_human_output_omits_header_for_single_visible_scope(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    (home / ".agents").mkdir(parents=True)
+    (project / ".agents").mkdir(parents=True)
+    (home / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  cloudflare/skills:
+    - wrangler
+""".strip()
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    async def fake_installed_skills(options, runner):
+        if options.directory == project / ".agents" / "skills":
+            return ()
+        assert options.directory == home / ".agents" / "skills"
+        return (InstalledSkill(name="wrangler", path=options.directory / "wrangler"),)
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["list"]) == 0
+
+    assert capsys.readouterr().out.splitlines() == [
+        "✔︎ wrangler cloudflare/skills ⌂",
+    ]
+
+
 def test_detail_text_renders_version_transition_without_scope() -> None:
     from skeel.io import detail_text
 

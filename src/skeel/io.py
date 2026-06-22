@@ -273,6 +273,9 @@ class Terminal:
     def line(self, message: str | Text = "") -> None:
         self.console.print(message)
 
+    def section_header(self, label: str) -> None:
+        self.line(Text(label, style=STYLE_DETAIL))
+
     def error(self, message: str) -> None:
         self.error_console.print(message, style=MARKER_FAILURE.color)
 

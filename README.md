@@ -7,8 +7,8 @@ Declarative agent skill management.
 ## ✨ Features
 
 - **Desired state**: declare skill sources in one YAML file
-- **Inventory, dry run, and diff**: list manifest skill status, preview
-  commands, and compare managed skills against what's installed locally
+- **Inventory, dry run, and diff**: list project and user skill inventory,
+  preview commands, and compare managed skills against what's installed locally
 - **Add, apply, and update**: edit desired state, reconcile installed skills
   with live progress, and update declared installed skills
 - **Target flags**: choose local or global scope from the CLI
@@ -68,31 +68,39 @@ directory: project scope uses the current working directory and user scope uses
 
 By default, `list`, `diff`, `apply`, and `update` read both
 `.agents/skills.yaml` in the current working directory and
-`~/.agents/skills.yaml`. Use `--scope project` or `--scope user` to operate on
-one scope. Human output uses the first column for the marker, the second column
-for the skill name, the third column for the source, and a muted suffix for
-versions, paths, or diagnostic details. User-scope skills include a muted `⌂`
-after the source.
+`~/.agents/skills.yaml`. `list` also reads the corresponding project and user
+skill directories so installed skills are visible even when they are not in a
+manifest. Use `--scope project` or `--scope user` to operate on one scope. Human
+output uses the first column for the marker, the second column for the skill
+name, the third column for the source, and a muted suffix for versions, paths,
+or diagnostic details. User-scope skills include a muted `⌂` after the source.
 
 For scripts, pass `--json` to `add`, `apply`, `diff`, `list`, `path`, `remove`,
 or `update` to emit one machine-readable object on stdout.
 
 ### `list`
 
-Show manifest skills and whether they are installed. Sources declared without a
-skill list expand to the installed skills from that source instead of showing
-`*`.
+Show project and user installed skills together with manifest status. Missing
+manifest skills are marked with `✘`; installed skills that are not declared in
+the manifest still appear in the inventory and include `"managed": false` in
+JSON output. When both project and user rows are present, human output groups
+them under `project` and `user` headers. Sources declared without a skill list
+expand to the installed skills from that source instead of showing `*`.
 
 ```sh
 uvx skeel list
 ```
 
 ```text
-✔︎ skill-creator anthropics/skills ⌂ main@3cf9a8d
-✔︎ wrangler cloudflare/skills ⌂ main@45cc198
-✔︎ quarto-brief mavam/quarto-brief ⌂ main@e89c555
+project
 ✔︎ tenzir-docs tenzir/skills main@a5d04ab
 ✘ gog openclaw/gogcli
+
+user
+✔︎ skill-creator anthropics/skills ⌂ main@3cf9a8d
+✔︎ wrangler cloudflare/skills ⌂ main@45cc198
+✔︎ clacks ⌂
+✔︎ quarto-brief mavam/quarto-brief ⌂ main@e89c555
 ```
 
 ### `diff`
