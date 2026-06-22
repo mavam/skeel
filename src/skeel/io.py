@@ -461,7 +461,7 @@ class Terminal:
 
         summary = [
             (len(updated), "updated", MARKER_UPDATED.color),
-            (len(skipped), "skipped", "yellow"),
+            (len(skipped), "skipped", MARKER_SKIPPED.color),
             (len(failed), "failed", MARKER_FAILURE.color),
             (len(current), "current", MARKER_CURRENT.color),
         ]
