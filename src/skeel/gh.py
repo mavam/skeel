@@ -355,9 +355,9 @@ def update_status(result: ProcessResult) -> str:
 def skipped_update_detail(result: ProcessResult) -> str:
     output = "\n".join(part for part in [result.stdout, result.stderr] if part)
     if "has no GitHub metadata" in output:
-        return "missing GitHub metadata, skipped"
+        return "missing GitHub metadata"
     if "pinned" in output and "skip" in output.lower():
-        return "pinned, skipped"
+        return "pinned"
     return "skipped"
 
 

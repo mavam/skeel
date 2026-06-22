@@ -1140,7 +1140,7 @@ def test_update_summary_counts_skips_and_failures(tmp_path, capsys, monkeypatch)
 
     err = capsys.readouterr().err
     assert "↑ tenzir-ship tenzir/skills main@9f3e1a2 → main@12c7aa3 ⌂" in err
-    assert "· caveman mattpocock/skills pinned, skipped ⌂" in err
+    assert "· caveman mattpocock/skills pinned ⌂" in err
     assert "1 updated" in err
     assert "1 skipped" in err
     assert "1 failed" in err
