@@ -135,8 +135,16 @@ def diff_installed_skills(
         )
     )
     missing_names = set(desired) - installed_aliases
-    missing = tuple(skill for skill in manifest.desired_skills if skill.name in missing_names)
-    return SkillDiff(missing=missing, extra=tuple(sorted(extra, key=lambda skill: skill.name)))
+    missing = [skill for skill in manifest.desired_skills if skill.name in missing_names]
+    missing.extend(
+        DesiredSkill(name="*", spec="*", source=source.source)
+        for source in dynamic_sources
+        if not dynamic_source_installed(source, installed)
+    )
+    return SkillDiff(
+        missing=tuple(missing),
+        extra=tuple(sorted(extra, key=lambda skill: skill.name)),
+    )
 
 
 def list_manifest_skills(

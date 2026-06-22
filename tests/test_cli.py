@@ -767,6 +767,58 @@ sources:
     ]
 
 
+def test_diff_reports_missing_dynamic_source(tmp_path, capsys, monkeypatch) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  example/skills:
+""",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_installed_skills(options, runner):
+        return ()
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--manifest", str(path), "diff"]) == 1
+
+    assert capsys.readouterr().out.splitlines() == [
+        "+ example/skills",
+    ]
+
+
+def test_diff_json_reports_missing_dynamic_source(tmp_path, capsys, monkeypatch) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  example/skills:
+""",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_installed_skills(options, runner):
+        return ()
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "--manifest", str(path), "diff"]) == 1
+
+    assert json.loads(capsys.readouterr().out) == {
+        "missing": [
+            {
+                "name": "*",
+                "source": "example/skills",
+                "scope": "project",
+            }
+        ],
+        "extra": [],
+        "in_sync": False,
+    }
+
+
 def test_apply_failure_reports_failed_skill(tmp_path, capsys, monkeypatch) -> None:
     path = write_manifest(
         tmp_path,
