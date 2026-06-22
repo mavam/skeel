@@ -1074,6 +1074,44 @@ sources:
     ]
 
 
+def test_update_dry_run_prints_commands_without_json(tmp_path, capsys, monkeypatch) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  mattpocock/skills:
+    - caveman
+""",
+    )
+    workdir = tmp_path / "work"
+    target = workdir / ".agents" / "skills"
+    target.mkdir(parents=True)
+    monkeypatch.chdir(workdir)
+
+    async def fake_installed_skills(options, runner):
+        assert options.directory == target
+        return (
+            InstalledSkill(
+                name="productivity/caveman",
+                path=target / "caveman",
+                source_url="https://github.com/mattpocock/skills",
+            ),
+            InstalledSkill(name="clacks", path=target / "clacks"),
+        )
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--manifest", str(path), "update", "--dry-run"]) == 0
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    normalized_output = " ".join(captured.out.split())
+    assert captured.out.count("↳") == 2
+    assert "↳ gh skill update clacks --dir" in normalized_output
+    assert "↳ gh skill update caveman --dir" in normalized_output
+    assert normalized_output.count("--all") == 2
+
+
 def test_update_summary_renders_changed_rows_and_tally(tmp_path, capsys, monkeypatch) -> None:
     current_names = [f"current-{index:02d}" for index in range(27)]
     manifest_sources = {
