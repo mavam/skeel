@@ -29,7 +29,7 @@ class OutputMarker:
 
 
 MARKER_SUCCESS = OutputMarker("✔︎", "green")
-MARKER_SKIPPED = OutputMarker("·", "bright_black")
+MARKER_SKIPPED = OutputMarker("!", "yellow")
 MARKER_FAILURE = OutputMarker("✘", "red")
 MARKER_UPDATED = OutputMarker("↑", "green")
 MARKER_CURRENT = OutputMarker("·", "bright_black")
