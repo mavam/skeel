@@ -275,6 +275,21 @@ def test_add_writes_manifest_in_keyed_shape(tmp_path, capsys, monkeypatch) -> No
     )
 
 
+def test_add_human_output_marks_user_scope(tmp_path, capsys, monkeypatch) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    assert main(["--scope", "user", "add", "tenzir/skills", "tenzir-docs"]) == 0
+
+    output = capsys.readouterr().out
+    line = " ".join(output.split())
+    assert line.startswith("✔︎ tenzir-docs tenzir/skills ⌂ ")
+    assert ".agents/skills.yaml" in "".join(output.split())
+
+
 def test_remove_writes_manifest_in_keyed_shape(tmp_path, capsys, monkeypatch) -> None:
     path = write_manifest(
         tmp_path,
@@ -867,6 +882,7 @@ def test_run_steps_can_remove_completed_current_progress_tasks(tmp_path: Path) -
         def __init__(self) -> None:
             self.next_task = 0
             self.descriptions: dict[int, str] = {}
+            self.scopes: dict[int, str] = {}
             self.removed: list[int] = []
 
         def __enter__(self):
@@ -875,11 +891,12 @@ def test_run_steps_can_remove_completed_current_progress_tasks(tmp_path: Path) -
         def __exit__(self, exc_type, exc_value, traceback) -> None:
             pass
 
-        def add_task(self, description, *, total):
+        def add_task(self, description, *, total, scope=""):
             del total
             task_id = self.next_task
             self.next_task += 1
             self.descriptions[task_id] = description
+            self.scopes[task_id] = scope
             return task_id
 
         def update(self, task_id, **kwargs) -> None:
@@ -913,11 +930,13 @@ def test_run_steps_can_remove_completed_current_progress_tasks(tmp_path: Path) -
             label="current",
             command=["current"],
             outcome=lambda result: StepOutcome(status="current"),
+            scope="user",
         ),
         SkillStep(
             label="skipped",
             command=["skipped"],
             outcome=lambda result: StepOutcome(status="skipped"),
+            scope="user",
         ),
     )
 
@@ -939,6 +958,7 @@ def test_run_steps_can_remove_completed_current_progress_tasks(tmp_path: Path) -
         for task_id in terminal.recording_progress.removed
     ]
     assert removed_labels == ["current"]
+    assert set(terminal.recording_progress.scopes.values()) == {"user"}
 
 
 def test_run_steps_stops_launching_after_apply_failure(

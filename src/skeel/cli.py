@@ -559,6 +559,7 @@ def finish_apply_results(
 
 async def command_add(command: AddOptions) -> int:
     runtime = build_runtime(command)
+    scope = single_scope(command)
     update = upsert_manifest_source(
         runtime.manifest_path,
         command.source,
@@ -582,10 +583,10 @@ async def command_add(command: AddOptions) -> int:
                 command,
                 update.changed,
                 manifest_path=runtime.manifest_path,
+                scope=scope,
             )
         return 0
 
-    scope = single_scope(command)
     if command.json:
         return await apply_manifest(command, runtime, update.manifest, scope=scope)
 
@@ -594,6 +595,7 @@ async def command_add(command: AddOptions) -> int:
         command,
         update.changed,
         manifest_path=runtime.manifest_path,
+        scope=scope,
     )
     return await apply_manifest(command, runtime, update.manifest, scope=scope)
 
@@ -711,6 +713,7 @@ def add_status_line(
     changed: bool,
     *,
     manifest_path: Path,
+    scope: str | None = None,
 ) -> None:
     if command.dry_run:
         marker = MARKER_PREVIEW if changed else MARKER_NOOP
@@ -720,6 +723,7 @@ def add_status_line(
         marker,
         add_label(command.source, command.skill),
         detail=str(manifest_path),
+        scope=scope,
     )
 
 

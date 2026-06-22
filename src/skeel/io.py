@@ -598,7 +598,7 @@ async def run_serial_step(
         return result
 
     with runtime.terminal.progress(transient=True) as progress:
-        task_id = progress.add_task(step.label, total=1)
+        task_id = progress.add_task(step.label, total=1, scope=step.scope or "")
         result = await execute_skill_step(step, runtime, default_status=default_status)
         runtime.terminal.finish_progress_task(progress, task_id, result)
         if should_remove_progress_task(
@@ -644,7 +644,11 @@ async def run_parallel_step_group(
     async def worker() -> None:
         while work := await next_step():
             index, step = work
-            task_id = progress.add_task(step.label, total=1) if progress is not None else None
+            task_id = (
+                progress.add_task(step.label, total=1, scope=step.scope or "")
+                if progress is not None
+                else None
+            )
             result = await execute_skill_step(step, runtime, default_status=default_status)
             results[index] = result
             if progress is not None and task_id is not None:

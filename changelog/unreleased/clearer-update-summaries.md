@@ -19,5 +19,6 @@ skeel update
 Updated rows use `↑`, skipped rows use `!`, and completed current rows disappear
 from the normal view. Use `skeel update -v` to keep the full per-skill view,
 including current rows. User-scope markers now stay next to the skill source,
-before version transitions or diagnostic notes. When every skill is already
-current, the command prints only the summary count.
+before version transitions or diagnostic notes, including while skills are
+actively updating. When every skill is already current, the command prints only
+the summary count.
