@@ -1,0 +1,9 @@
+created: 2026-06-22
+title: Clearer update summaries
+intro: >-
+  This release makes skill update output easier to scan by showing active work clearly
+  and finishing with a compact summary. It also keeps user-scope markers next to their
+  skill source across update states.
+source:
+  mode: sync-stable-queue
+  previous_stable: v0.8.0
