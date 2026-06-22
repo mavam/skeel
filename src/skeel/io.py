@@ -29,8 +29,10 @@ class OutputMarker:
 
 
 MARKER_SUCCESS = OutputMarker("✔︎", "green")
-MARKER_SKIPPED = OutputMarker("✔︎", "yellow")
+MARKER_SKIPPED = OutputMarker("!", "yellow")
 MARKER_FAILURE = OutputMarker("✘", "red")
+MARKER_UPDATED = OutputMarker("↑", "green")
+MARKER_CURRENT = OutputMarker("·", "bright_black")
 MARKER_INSTALL = OutputMarker("+", "green")
 MARKER_REMOVE = OutputMarker("-", "red")
 MARKER_PREVIEW = OutputMarker("↳", "cyan")
@@ -135,7 +137,9 @@ def status_marker(status: str | None) -> OutputMarker | None:
         case "removed":
             return MARKER_REMOVE
         case "current":
-            return MARKER_SUCCESS
+            return MARKER_CURRENT
+        case "updated":
+            return MARKER_UPDATED
         case "skipped":
             return MARKER_SKIPPED
         case _:
@@ -146,20 +150,24 @@ def scope_marker(scope: str | None) -> str | None:
     return SCOPE_USER if scope == "user" else None
 
 
-def detail_text(detail: str | None, *, scope: str | None = None) -> Text:
+def detail_text(detail: str | None) -> Text:
     text = Text()
     if detail:
         if " → " in detail:
-            _before, after = detail.split(" → ", 1)
+            before, after = detail.split(" → ", 1)
+            text.append(before, style=STYLE_DETAIL)
+            text.append(" → ", style=STYLE_DETAIL)
             text.append(after, style=STYLE_NEW_VERSION)
         else:
             text.append(detail, style=STYLE_DETAIL)
+    return text
+
+
+def append_scope_text(text: Text, scope: str | None) -> None:
     marker = scope_marker(scope)
     if marker:
-        if detail:
-            text.append(" ", style=STYLE_DETAIL)
+        text.append(" ", style=STYLE_DETAIL)
         text.append(marker, style=STYLE_DETAIL)
-    return text
 
 
 def label_text(label: str) -> Text:
@@ -179,6 +187,10 @@ def label_text(label: str) -> Text:
     return text
 
 
+def label_sort_key(label: str) -> str:
+    return label_text(label).plain
+
+
 class StepMarkerColumn(ProgressColumn):
     def __init__(self) -> None:
         super().__init__()
@@ -196,10 +208,8 @@ class StepDescriptionColumn(ProgressColumn):
         text = label_text(task.description)
         detail = task.fields.get("detail")
         scope = task.fields.get("scope")
-        extra = detail_text(
-            detail if isinstance(detail, str) else None,
-            scope=scope if isinstance(scope, str) else None,
-        )
+        append_scope_text(text, scope if isinstance(scope, str) else None)
+        extra = detail_text(detail if isinstance(detail, str) else None)
         if extra.plain:
             text.append(" ", style=STYLE_DETAIL)
             text.append_text(extra)
@@ -349,7 +359,8 @@ class Terminal:
         text = Text(marker.icon, style=marker.color)
         text.append(" ")
         text.append_text(label_text(label))
-        extra = detail_text(detail, scope=scope)
+        append_scope_text(text, scope)
+        extra = detail_text(detail)
         if extra.plain:
             text.append(" ", style=STYLE_DETAIL)
             text.append_text(extra)
@@ -414,6 +425,44 @@ class Terminal:
     def render_step_result(self, result: StepResult) -> None:
         marker, detail = self.step_result_marker(result)
         self.step_status_line(marker, result.label, detail=detail, scope=result.scope)
+
+    def render_update_summary(self, results: Sequence[StepResult], *, verbose: bool) -> None:
+        failed: list[StepResult] = []
+        by_status: dict[str, list[StepResult]] = {
+            "updated": [],
+            "skipped": [],
+            "current": [],
+        }
+        for result in results:
+            if step_failed(result):
+                failed.append(result)
+                continue
+            status = result.status
+            if status is not None and status in by_status:
+                by_status[status].append(result)
+
+        for bucket in by_status.values():
+            bucket.sort(key=lambda result: label_sort_key(result.label))
+        updated = by_status["updated"]
+        skipped = by_status["skipped"]
+        current = by_status["current"]
+
+        rows = updated + (current if verbose else []) + skipped
+        for result in rows:
+            marker, detail = self.step_result_marker(result)
+            self.step_status_line(marker, result.label, detail=detail, scope=result.scope)
+        if rows:
+            self.error_console.print()
+
+        summary = [
+            (len(updated), "updated", MARKER_UPDATED.color),
+            (len(skipped), "skipped", MARKER_SKIPPED.color),
+            (len(failed), "failed", MARKER_FAILURE.color),
+            (len(current), "current", MARKER_CURRENT.color),
+        ]
+        for count, label, style in summary:
+            if count:
+                self.error_console.print(f"{count} {label}", style=style)
 
     def step_result_marker(self, result: StepResult) -> tuple[OutputMarker, str | None]:
         if result.returncode not in (None, 0):
@@ -530,20 +579,29 @@ async def run_serial_step(
     runtime: StepRuntime,
     *,
     default_status: str | None,
+    render: bool = True,
+    remove_current_progress_tasks: bool = False,
 ) -> StepResult:
     if runtime.terminal.json_output:
         return await execute_skill_step(step, runtime, default_status=default_status)
 
     if not runtime.terminal.live_progress_enabled():
         result = await execute_skill_step(step, runtime, default_status=default_status)
-        runtime.terminal.render_step_result(result)
+        if render:
+            runtime.terminal.render_step_result(result)
         return result
 
     with runtime.terminal.progress(transient=True) as progress:
-        task_id = progress.add_task(step.label, total=1)
+        task_id = progress.add_task(step.label, total=1, scope=step.scope or "")
         result = await execute_skill_step(step, runtime, default_status=default_status)
         runtime.terminal.finish_progress_task(progress, task_id, result)
-    runtime.terminal.render_step_result(result)
+        if should_remove_progress_task(
+            result,
+            remove_current_progress_tasks=remove_current_progress_tasks,
+        ):
+            progress.remove_task(task_id)
+    if render:
+        runtime.terminal.render_step_result(result)
     return result
 
 
@@ -553,6 +611,8 @@ async def run_parallel_step_group(
     *,
     default_status: str | None,
     keep_going: bool,
+    render: bool = True,
+    remove_current_progress_tasks: bool = False,
 ) -> tuple[list[StepResult], int]:
     results: list[StepResult | None] = [None] * len(steps)
     next_index = 0
@@ -578,11 +638,20 @@ async def run_parallel_step_group(
     async def worker() -> None:
         while work := await next_step():
             index, step = work
-            task_id = progress.add_task(step.label, total=1) if progress is not None else None
+            task_id = (
+                progress.add_task(step.label, total=1, scope=step.scope or "")
+                if progress is not None
+                else None
+            )
             result = await execute_skill_step(step, runtime, default_status=default_status)
             results[index] = result
             if progress is not None and task_id is not None:
                 runtime.terminal.finish_progress_task(progress, task_id, result)
+                if should_remove_progress_task(
+                    result,
+                    remove_current_progress_tasks=remove_current_progress_tasks,
+                ):
+                    progress.remove_task(task_id)
             if step_failed(result) and not keep_going:
                 stop_launching.set()
 
@@ -597,10 +666,18 @@ async def run_parallel_step_group(
             await run_workers()
 
     ordered_results = [result for result in results if result is not None]
-    if not runtime.terminal.json_output:
+    if not runtime.terminal.json_output and render:
         for result in ordered_results:
             runtime.terminal.render_step_result(result)
     return ordered_results, first_failure_code(ordered_results)
+
+
+def should_remove_progress_task(
+    result: StepResult,
+    *,
+    remove_current_progress_tasks: bool,
+) -> bool:
+    return remove_current_progress_tasks and not step_failed(result) and result.status == "current"
 
 
 async def run_steps(
@@ -611,6 +688,8 @@ async def run_steps(
     dry_run_action: str,
     default_status: str | None = None,
     keep_going: bool = False,
+    render: bool = True,
+    remove_current_progress_tasks: bool = False,
 ) -> tuple[list[StepResult], int]:
     results: list[StepResult] = []
     exit_code = 0
@@ -632,6 +711,8 @@ async def run_steps(
                 runtime,
                 default_status=default_status,
                 keep_going=keep_going,
+                render=render,
+                remove_current_progress_tasks=remove_current_progress_tasks,
             )
             results.extend(group_results)
             if group_exit_code and not exit_code:
@@ -641,7 +722,13 @@ async def run_steps(
             index = end
             continue
 
-        result = await run_serial_step(step, runtime, default_status=default_status)
+        result = await run_serial_step(
+            step,
+            runtime,
+            default_status=default_status,
+            render=render,
+            remove_current_progress_tasks=remove_current_progress_tasks,
+        )
         results.append(result)
         index += 1
         if step_failed(result):

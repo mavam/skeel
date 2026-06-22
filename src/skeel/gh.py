@@ -20,6 +20,13 @@ from .manifest import DesiredSkill, Manifest, SkillSpec, SourceSpec
 
 OutcomeFactory = Callable[[ProcessResult], StepOutcome]
 MIN_GH_VERSION = (2, 94, 0)
+UpdateStatus = Literal["current", "skipped", "updated"]
+
+
+@dataclass(frozen=True)
+class UpdateClassification:
+    status: UpdateStatus
+    skipped_detail: str | None = None
 
 
 @dataclass(frozen=True)
@@ -341,24 +348,31 @@ def update_steps(
     return steps
 
 
-def update_status(result: ProcessResult) -> str:
-    output = "\n".join(part for part in [result.stdout, result.stderr] if part)
-    if "has no GitHub metadata" in output:
-        return "skipped"
-    if "pinned" in output and "skip" in output.lower():
-        return "skipped"
-    if "All skills are up to date" in output:
-        return "current"
-    return "updated"
+def update_output(result: ProcessResult) -> str:
+    return "\n".join(part for part in [result.stdout, result.stderr] if part)
+
+
+def classify_update_output(output: str) -> UpdateClassification:
+    lowered = output.lower()
+    if "has no github metadata" in lowered:
+        return UpdateClassification("skipped", "missing GitHub metadata")
+    if "pinned" in lowered and "skip" in lowered:
+        return UpdateClassification("skipped", "pinned")
+    if "all skills are up to date" in lowered:
+        return UpdateClassification("current")
+    return UpdateClassification("updated")
 
 
 def update_outcome(skill: InstalledSkill) -> OutcomeFactory:
     before = skill.provenance
 
     def outcome(result: ProcessResult) -> StepOutcome:
-        status = update_status(result)
+        classification = classify_update_output(update_output(result))
         after = read_skill_provenance(skill.path)
-        return StepOutcome(status=status, detail=version_transition(before, after))
+        detail = version_transition(before, after)
+        if detail is None and classification.status == "skipped":
+            detail = classification.skipped_detail
+        return StepOutcome(status=classification.status, detail=detail)
 
     return outcome
 

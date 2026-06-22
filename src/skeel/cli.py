@@ -106,6 +106,15 @@ def json_arg(*, inherited: bool = False) -> bool:
     )
 
 
+def verbose_arg(*, inherited: bool = False) -> bool:
+    return arg(
+        False,
+        short="v",
+        inherited=inherited,
+        help="Show every update row, including current skills.",
+    )
+
+
 class CommonOptions(Protocol):
     manifest: str | None
     scope: str | None
@@ -122,6 +131,7 @@ class ApplyOptions(CommonOptions, Protocol):
 class UpdateOptions(CommonOptions, Protocol):
     source: str | None
     skill: str | None
+    verbose: bool
 
 
 class AddOptions(CommonOptions, Protocol):
@@ -549,6 +559,7 @@ def finish_apply_results(
 
 async def command_add(command: AddOptions) -> int:
     runtime = build_runtime(command)
+    scope = single_scope(command)
     update = upsert_manifest_source(
         runtime.manifest_path,
         command.source,
@@ -572,10 +583,10 @@ async def command_add(command: AddOptions) -> int:
                 command,
                 update.changed,
                 manifest_path=runtime.manifest_path,
+                scope=scope,
             )
         return 0
 
-    scope = single_scope(command)
     if command.json:
         return await apply_manifest(command, runtime, update.manifest, scope=scope)
 
@@ -584,6 +595,7 @@ async def command_add(command: AddOptions) -> int:
         command,
         update.changed,
         manifest_path=runtime.manifest_path,
+        scope=scope,
     )
     return await apply_manifest(command, runtime, update.manifest, scope=scope)
 
@@ -701,6 +713,7 @@ def add_status_line(
     changed: bool,
     *,
     manifest_path: Path,
+    scope: str | None = None,
 ) -> None:
     if command.dry_run:
         marker = MARKER_PREVIEW if changed else MARKER_NOOP
@@ -710,6 +723,7 @@ def add_status_line(
         marker,
         add_label(command.source, command.skill),
         detail=str(manifest_path),
+        scope=scope,
     )
 
 
@@ -780,6 +794,8 @@ async def command_update(command: UpdateOptions) -> int:
             dry_run=command.dry_run,
             dry_run_action="would update",
             keep_going=True,
+            render=False,
+            remove_current_progress_tasks=not command.verbose,
         )
         results.extend(scope_results)
         if scope_exit_code and not exit_code:
@@ -791,7 +807,10 @@ async def command_update(command: UpdateOptions) -> int:
 
     if command.json:
         terminal.json(run_json(dry_run=command.dry_run, steps=results))
-    elif exit_code:
+    elif not command.dry_run:
+        terminal.render_update_summary(results, verbose=command.verbose)
+
+    if not command.json and exit_code:
         failed = failed_steps(results)
         labels = ", ".join(step.label for step in failed)
         terminal.error(f"failed to update skills: {labels}" if failed else "update failed")
@@ -939,6 +958,7 @@ class Update(SkeelCommand):
     manifest: str | None = manifest_arg(inherited=True)
     scope: str | None = scope_arg(inherited=True)
     dry_run: bool = dry_run_arg(inherited=True)
+    verbose: bool = verbose_arg()
     json: bool = json_arg(inherited=True)
 
     @override

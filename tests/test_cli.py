@@ -4,10 +4,11 @@ from pathlib import Path
 
 from skeel import __version__
 from skeel.cli import Runtime, diff_skills, main
-from skeel.gh import GhOptions, InstalledSkill, SkillStep
+from skeel.gh import GhOptions, InstalledSkill, SkillStep, read_skill_provenance
 from skeel.io import (
     ProcessResult,
     ProcessRunner,
+    StepOutcome,
     Terminal,
     run_steps,
 )
@@ -18,6 +19,83 @@ def write_manifest(tmp_path: Path, content: str) -> Path:
     path = tmp_path / "skills.yaml"
     path.write_text(content.strip())
     return path
+
+
+def write_update_manifest(tmp_path: Path, sources: dict[str, list[str]]) -> Path:
+    lines = ["sources:"]
+    for source, skills in sources.items():
+        lines.append(f"  {source}:")
+        for skill in skills:
+            lines.append(f"    - {skill}")
+    return write_manifest(tmp_path, "\n".join(lines))
+
+
+def write_skill_metadata(path: Path, *, name: str, source: str, sha: str) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    (path / "SKILL.md").write_text(
+        f"""
+---
+metadata:
+  github-ref: refs/heads/main
+  github-repo: https://github.com/{source}
+  github-tree-sha: {sha}
+name: {name}
+---
+# {name}
+""".strip()
+    )
+
+
+def installed_update_skill(
+    target: Path,
+    *,
+    name: str,
+    source: str,
+    sha: str = "9f3e1a20000",
+) -> InstalledSkill:
+    path = target / name
+    write_skill_metadata(path, name=name, source=source, sha=sha)
+    return InstalledSkill(
+        name=name,
+        path=path,
+        source_url=f"https://github.com/{source}",
+        provenance=read_skill_provenance(path),
+    )
+
+
+class UpdateRunner:
+    def __init__(
+        self,
+        target: Path,
+        sources: dict[str, str],
+        *,
+        updated: dict[str, str] | None = None,
+        skipped: set[str] | None = None,
+        failed: set[str] | None = None,
+    ) -> None:
+        self.target = target
+        self.sources = sources
+        self.updated = updated or {}
+        self.skipped = skipped or set()
+        self.failed = failed or set()
+
+    async def run(self, command, **kwargs):
+        assert kwargs == {"capture_output": True}
+        assert command[:3] == ["gh", "skill", "update"]
+        name = command[3]
+        if name in self.failed:
+            return ProcessResult(command=command, returncode=7, stderr="gh failed")
+        if name in self.updated:
+            write_skill_metadata(
+                self.target / name,
+                name=name,
+                source=self.sources[name],
+                sha=self.updated[name],
+            )
+            return ProcessResult(command=command, returncode=0, stdout=f"Updated {name}")
+        if name in self.skipped:
+            return ProcessResult(command=command, returncode=0, stdout=f"{name} pinned, skipped")
+        return ProcessResult(command=command, returncode=0, stdout="All skills are up to date")
 
 
 def test_no_arguments_prints_help(capsys) -> None:
@@ -197,6 +275,21 @@ def test_add_writes_manifest_in_keyed_shape(tmp_path, capsys, monkeypatch) -> No
     )
 
 
+def test_add_human_output_marks_user_scope(tmp_path, capsys, monkeypatch) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    assert main(["--scope", "user", "add", "tenzir/skills", "tenzir-docs"]) == 0
+
+    output = capsys.readouterr().out
+    line = " ".join(output.split())
+    assert line.startswith("✔︎ tenzir-docs tenzir/skills ⌂ ")
+    assert ".agents/skills.yaml" in "".join(output.split())
+
+
 def test_remove_writes_manifest_in_keyed_shape(tmp_path, capsys, monkeypatch) -> None:
     path = write_manifest(
         tmp_path,
@@ -372,9 +465,10 @@ sources:
 
     assert main(["remove", "alpha-skill"]) == 0
 
-    line = capsys.readouterr().out.strip()
-    assert line.startswith("✔︎ alpha-skill example/skills")
-    assert line.endswith(" ⌂")
+    output = capsys.readouterr().out
+    line = " ".join(output.split())
+    assert line.startswith("✔︎ alpha-skill example/skills ⌂ ")
+    assert ".agents/skills.yaml" in "".join(output.split())
 
 
 def test_remove_requires_scope_when_default_matches_project_and_user(
@@ -494,16 +588,11 @@ sources:
     ]
 
 
-def test_detail_text_appends_house_only_for_user_scope() -> None:
+def test_detail_text_renders_version_transition_without_scope() -> None:
     from skeel.io import detail_text
 
-    # User scope: the house follows the (styled) version, separated by a space.
-    assert detail_text("main@old → main@new", scope="user").plain == "main@new ⌂"
-    # User scope with no version detail: just the house, no leading space.
-    assert detail_text(None, scope="user").plain == "⌂"
-    # Project (and unscoped) output never shows the marker.
-    assert detail_text("main@old → main@new", scope="project").plain == "main@new"
-    assert detail_text(None, scope="project").plain == ""
+    assert detail_text("main@old → main@new").plain == "main@old → main@new"
+    assert detail_text(None).plain == ""
 
 
 def test_status_text_renders_scope_marker_without_detail() -> None:
@@ -515,6 +604,20 @@ def test_status_text_renders_scope_marker_without_detail() -> None:
 
     text = terminal.status_text(MARKER_SUCCESS, "cloudflare/skills@wrangler", scope="project")
     assert "⌂" not in text.plain
+
+
+def test_status_text_renders_scope_marker_before_detail() -> None:
+    terminal = Terminal()
+    from skeel.io import MARKER_SKIPPED
+
+    text = terminal.status_text(
+        MARKER_SKIPPED,
+        "downstairs-dawgs/clacks@clacks",
+        detail="missing GitHub metadata",
+        scope="user",
+    )
+
+    assert text.plain == "! clacks downstairs-dawgs/clacks ⌂ missing GitHub metadata"
 
 
 def test_diff_marks_user_scope_across_project_and_user_manifests(
@@ -769,6 +872,95 @@ def test_run_steps_executes_parallel_commands_concurrently(tmp_path: Path) -> No
     assert runner.max_active > 1
 
 
+def test_run_steps_can_remove_completed_current_progress_tasks(tmp_path: Path) -> None:
+    class Runner:
+        async def run(self, command, **kwargs):
+            assert kwargs == {"capture_output": True}
+            return ProcessResult(command=command, returncode=0)
+
+    class RecordingProgress:
+        def __init__(self) -> None:
+            self.next_task = 0
+            self.descriptions: dict[int, str] = {}
+            self.scopes: dict[int, str] = {}
+            self.removed: list[int] = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback) -> None:
+            pass
+
+        def add_task(self, description, *, total, scope=""):
+            del total
+            task_id = self.next_task
+            self.next_task += 1
+            self.descriptions[task_id] = description
+            self.scopes[task_id] = scope
+            return task_id
+
+        def update(self, task_id, **kwargs) -> None:
+            del task_id, kwargs
+
+        def remove_task(self, task_id) -> None:
+            self.removed.append(task_id)
+
+    class ActiveOnlyTerminal(Terminal):
+        def __init__(self) -> None:
+            super().__init__(json_output=False)
+            self.recording_progress = RecordingProgress()
+
+        def live_progress_enabled(self) -> bool:
+            return True
+
+        def progress(self, *, transient: bool = False):
+            assert transient is True
+            return self.recording_progress
+
+    terminal = ActiveOnlyTerminal()
+    runtime = Runtime(
+        manifest_path=Path("manifest.yaml"),
+        manifest_required=False,
+        options=GhOptions(directory=tmp_path),
+        runner=Runner(),
+        terminal=terminal,
+    )
+    steps = (
+        SkillStep(
+            label="current",
+            command=["current"],
+            outcome=lambda result: StepOutcome(status="current"),
+            scope="user",
+        ),
+        SkillStep(
+            label="skipped",
+            command=["skipped"],
+            outcome=lambda result: StepOutcome(status="skipped"),
+            scope="user",
+        ),
+    )
+
+    results, exit_code = asyncio.run(
+        run_steps(
+            steps,
+            runtime,
+            dry_run=False,
+            dry_run_action="would install",
+            render=False,
+            remove_current_progress_tasks=True,
+        )
+    )
+
+    assert exit_code == 0
+    assert [result.label for result in results] == ["current", "skipped"]
+    removed_labels = [
+        terminal.recording_progress.descriptions[task_id]
+        for task_id in terminal.recording_progress.removed
+    ]
+    assert removed_labels == ["current"]
+    assert set(terminal.recording_progress.scopes.values()) == {"user"}
+
+
 def test_run_steps_stops_launching_after_apply_failure(
     tmp_path: Path,
     monkeypatch,
@@ -910,6 +1102,204 @@ sources:
         "clacks",
         "mattpocock/skills@caveman",
     ]
+
+
+def test_update_dry_run_prints_commands_without_json(tmp_path, capsys, monkeypatch) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  mattpocock/skills:
+    - caveman
+""",
+    )
+    workdir = tmp_path / "work"
+    target = workdir / ".agents" / "skills"
+    target.mkdir(parents=True)
+    monkeypatch.chdir(workdir)
+
+    async def fake_installed_skills(options, runner):
+        assert options.directory == target
+        return (
+            InstalledSkill(
+                name="productivity/caveman",
+                path=target / "caveman",
+                source_url="https://github.com/mattpocock/skills",
+            ),
+            InstalledSkill(name="clacks", path=target / "clacks"),
+        )
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--manifest", str(path), "update", "--dry-run"]) == 0
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    normalized_output = " ".join(captured.out.split())
+    assert captured.out.count("↳") == 2
+    assert "↳ gh skill update clacks --dir" in normalized_output
+    assert "↳ gh skill update caveman --dir" in normalized_output
+    assert normalized_output.count("--all") == 2
+
+
+def test_update_summary_renders_changed_rows_and_tally(tmp_path, capsys, monkeypatch) -> None:
+    current_names = [f"current-{index:02d}" for index in range(27)]
+    manifest_sources = {
+        "tenzir/skills": ["tenzir-ship"],
+        "example/skills": current_names,
+    }
+    path = write_update_manifest(tmp_path, manifest_sources)
+    home = tmp_path / "home"
+    target = home / ".agents" / "skills"
+    target.mkdir(parents=True)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    installed = tuple(
+        installed_update_skill(target, name=name, source=source)
+        for source, names in manifest_sources.items()
+        for name in names
+    )
+    sources_by_name = {name: source for source, names in manifest_sources.items() for name in names}
+
+    async def fake_installed_skills(options, runner):
+        assert options.directory == target
+        return installed
+
+    runner = UpdateRunner(
+        target,
+        sources_by_name,
+        updated={"tenzir-ship": "12c7aa30000"},
+    )
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+    monkeypatch.setattr("skeel.cli.ProcessRunner", lambda: runner)
+
+    assert main(["--manifest", str(path), "--scope", "user", "update"]) == 0
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.splitlines() == [
+        "↑ tenzir-ship tenzir/skills ⌂ main@9f3e1a2 → main@12c7aa3",
+        "",
+        "1 updated",
+        "27 current",
+    ]
+    assert all(not line.startswith(" ") for line in captured.err.splitlines() if line)
+
+
+def test_update_summary_collapses_all_current_output(tmp_path, capsys, monkeypatch) -> None:
+    skill_names = [f"current-{index:02d}" for index in range(28)]
+    manifest_sources = {"example/skills": skill_names}
+    path = write_update_manifest(tmp_path, manifest_sources)
+    home = tmp_path / "home"
+    target = home / ".agents" / "skills"
+    target.mkdir(parents=True)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    installed = tuple(
+        installed_update_skill(target, name=name, source="example/skills") for name in skill_names
+    )
+    sources_by_name = {name: "example/skills" for name in skill_names}
+
+    async def fake_installed_skills(options, runner):
+        assert options.directory == target
+        return installed
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+    monkeypatch.setattr("skeel.cli.ProcessRunner", lambda: UpdateRunner(target, sources_by_name))
+
+    assert main(["--manifest", str(path), "--scope", "user", "update"]) == 0
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "28 current\n"
+
+
+def test_update_verbose_lists_current_rows(tmp_path, capsys, monkeypatch) -> None:
+    manifest_sources = {
+        "downstairs-dawgs/clacks": ["clacks"],
+        "openclaw/gogcli": ["gog"],
+        "tenzir/skills": ["tenzir-ship"],
+    }
+    path = write_update_manifest(tmp_path, manifest_sources)
+    home = tmp_path / "home"
+    target = home / ".agents" / "skills"
+    target.mkdir(parents=True)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    installed = tuple(
+        installed_update_skill(target, name=name, source=source)
+        for source, names in manifest_sources.items()
+        for name in names
+    )
+    sources_by_name = {name: source for source, names in manifest_sources.items() for name in names}
+
+    async def fake_installed_skills(options, runner):
+        assert options.directory == target
+        return installed
+
+    runner = UpdateRunner(
+        target,
+        sources_by_name,
+        updated={"tenzir-ship": "12c7aa30000"},
+    )
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+    monkeypatch.setattr("skeel.cli.ProcessRunner", lambda: runner)
+
+    assert main(["--manifest", str(path), "--scope", "user", "update", "-v"]) == 0
+
+    err = capsys.readouterr().err
+    assert "↑ tenzir-ship tenzir/skills ⌂ main@9f3e1a2 → main@12c7aa3" in err
+    assert "· clacks downstairs-dawgs/clacks ⌂" in err
+    assert "· gog openclaw/gogcli ⌂" in err
+    assert "1 updated" in err
+    assert "2 current" in err
+
+
+def test_update_summary_counts_skips_and_failures(tmp_path, capsys, monkeypatch) -> None:
+    manifest_sources = {
+        "tenzir/skills": ["tenzir-ship"],
+        "mattpocock/skills": ["caveman"],
+        "openclaw/openclaw": ["openhue"],
+        "example/skills": ["steady"],
+    }
+    path = write_update_manifest(tmp_path, manifest_sources)
+    home = tmp_path / "home"
+    target = home / ".agents" / "skills"
+    target.mkdir(parents=True)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    installed = tuple(
+        installed_update_skill(target, name=name, source=source)
+        for source, names in manifest_sources.items()
+        for name in names
+    )
+    sources_by_name = {name: source for source, names in manifest_sources.items() for name in names}
+
+    async def fake_installed_skills(options, runner):
+        assert options.directory == target
+        return installed
+
+    runner = UpdateRunner(
+        target,
+        sources_by_name,
+        updated={"tenzir-ship": "12c7aa30000"},
+        skipped={"caveman"},
+        failed={"openhue"},
+    )
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+    monkeypatch.setattr("skeel.cli.ProcessRunner", lambda: runner)
+
+    assert main(["--manifest", str(path), "--scope", "user", "update"]) == 7
+
+    err = capsys.readouterr().err
+    assert "↑ tenzir-ship tenzir/skills ⌂ main@9f3e1a2 → main@12c7aa3" in err
+    assert "! caveman mattpocock/skills ⌂ pinned" in err
+    assert "1 updated" in err
+    assert "1 skipped" in err
+    assert "1 failed" in err
+    assert "1 current" in err
+    assert "failed to update skills: openclaw/openclaw@openhue" in err
+    assert "  gh failed" in err
 
 
 def test_update_deduplicates_project_and_user_scope_at_home(tmp_path, capsys, monkeypatch) -> None:

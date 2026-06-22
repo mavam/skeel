@@ -8,6 +8,7 @@ from skeel.gh import (
     InstalledSkill,
     SkillProvenance,
     SkillStep,
+    classify_update_output,
     fast_update_outcome,
     install_steps,
     installed_skills,
@@ -339,6 +340,19 @@ def test_version_transition_hides_detail_for_unchanged_versions() -> None:
     provenance = SkillProvenance(ref="refs/heads/main", tree_sha="old123456789")
 
     assert version_transition(provenance, provenance) is None
+
+
+def test_update_output_classification_is_case_insensitive_for_skips() -> None:
+    classification = classify_update_output("Pinned skill, skipping update")
+
+    assert classification.status == "skipped"
+    assert classification.skipped_detail == "pinned"
+
+
+def test_detail_text_renders_full_version_transition() -> None:
+    from skeel.io import detail_text
+
+    assert detail_text("main@old1234 → main@new1234").plain == "main@old1234 → main@new1234"
 
 
 def test_update_outcome_detail_carries_only_version_transition(tmp_path: Path) -> None:
