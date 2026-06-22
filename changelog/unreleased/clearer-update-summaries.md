@@ -9,13 +9,14 @@ prs:
 created: 2026-06-22T09:50:30.452171Z
 ---
 
-`skeel update` now highlights only changed and skipped skills before ending with
-a compact summary:
+`skeel update` now shows skills only while they are actively updating, then ends
+with a compact summary:
 
 ```sh
 skeel update
 ```
 
-Updated rows use `↑`, skipped rows use `!`, and current rows are hidden unless
-you run `skeel update -v`. When every skill is already current, the command
-prints only the summary count.
+Updated rows use `↑`, skipped rows use `!`, and completed current rows disappear
+from the normal view. Use `skeel update -v` to keep the full per-skill view,
+including current rows. When every skill is already current, the command prints
+only the summary count.

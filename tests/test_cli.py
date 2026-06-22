@@ -846,6 +846,76 @@ def test_run_steps_executes_parallel_commands_concurrently(tmp_path: Path) -> No
     assert runner.max_active > 1
 
 
+def test_run_steps_can_remove_completed_live_progress_tasks(tmp_path: Path) -> None:
+    class Runner:
+        async def run(self, command, **kwargs):
+            assert kwargs == {"capture_output": True}
+            return ProcessResult(command=command, returncode=0)
+
+    class RecordingProgress:
+        def __init__(self) -> None:
+            self.next_task = 0
+            self.removed: list[int] = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback) -> None:
+            pass
+
+        def add_task(self, description, *, total):
+            del description, total
+            task_id = self.next_task
+            self.next_task += 1
+            return task_id
+
+        def update(self, task_id, **kwargs) -> None:
+            del task_id, kwargs
+
+        def remove_task(self, task_id) -> None:
+            self.removed.append(task_id)
+
+    class ActiveOnlyTerminal(Terminal):
+        def __init__(self) -> None:
+            super().__init__(json_output=False)
+            self.recording_progress = RecordingProgress()
+
+        def live_progress_enabled(self) -> bool:
+            return True
+
+        def progress(self, *, transient: bool = False):
+            assert transient is True
+            return self.recording_progress
+
+    terminal = ActiveOnlyTerminal()
+    runtime = Runtime(
+        manifest_path=Path("manifest.yaml"),
+        manifest_required=False,
+        options=GhOptions(directory=tmp_path),
+        runner=Runner(),
+        terminal=terminal,
+    )
+    steps = (
+        SkillStep(label="skill-1", command=["skill-1"]),
+        SkillStep(label="skill-2", command=["skill-2"]),
+    )
+
+    results, exit_code = asyncio.run(
+        run_steps(
+            steps,
+            runtime,
+            dry_run=False,
+            dry_run_action="would install",
+            render=False,
+            keep_progress_tasks=False,
+        )
+    )
+
+    assert exit_code == 0
+    assert [result.label for result in results] == ["skill-1", "skill-2"]
+    assert sorted(terminal.recording_progress.removed) == [0, 1]
+
+
 def test_run_steps_stops_launching_after_apply_failure(
     tmp_path: Path,
     monkeypatch,

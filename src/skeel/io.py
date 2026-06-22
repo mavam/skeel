@@ -585,6 +585,7 @@ async def run_serial_step(
     *,
     default_status: str | None,
     render: bool = True,
+    keep_progress_tasks: bool = True,
 ) -> StepResult:
     if runtime.terminal.json_output:
         return await execute_skill_step(step, runtime, default_status=default_status)
@@ -599,6 +600,8 @@ async def run_serial_step(
         task_id = progress.add_task(step.label, total=1)
         result = await execute_skill_step(step, runtime, default_status=default_status)
         runtime.terminal.finish_progress_task(progress, task_id, result)
+        if not keep_progress_tasks:
+            progress.remove_task(task_id)
     if render:
         runtime.terminal.render_step_result(result)
     return result
@@ -611,6 +614,7 @@ async def run_parallel_step_group(
     default_status: str | None,
     keep_going: bool,
     render: bool = True,
+    keep_progress_tasks: bool = True,
 ) -> tuple[list[StepResult], int]:
     results: list[StepResult | None] = [None] * len(steps)
     next_index = 0
@@ -641,6 +645,8 @@ async def run_parallel_step_group(
             results[index] = result
             if progress is not None and task_id is not None:
                 runtime.terminal.finish_progress_task(progress, task_id, result)
+                if not keep_progress_tasks:
+                    progress.remove_task(task_id)
             if step_failed(result) and not keep_going:
                 stop_launching.set()
 
@@ -670,6 +676,7 @@ async def run_steps(
     default_status: str | None = None,
     keep_going: bool = False,
     render: bool = True,
+    keep_progress_tasks: bool = True,
 ) -> tuple[list[StepResult], int]:
     results: list[StepResult] = []
     exit_code = 0
@@ -692,6 +699,7 @@ async def run_steps(
                 default_status=default_status,
                 keep_going=keep_going,
                 render=render,
+                keep_progress_tasks=keep_progress_tasks,
             )
             results.extend(group_results)
             if group_exit_code and not exit_code:
@@ -706,6 +714,7 @@ async def run_steps(
             runtime,
             default_status=default_status,
             render=render,
+            keep_progress_tasks=keep_progress_tasks,
         )
         results.append(result)
         index += 1
