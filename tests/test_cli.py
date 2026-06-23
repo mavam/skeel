@@ -467,7 +467,7 @@ sources:
 
     output = capsys.readouterr().out
     line = " ".join(output.split())
-    assert line.startswith("✔︎ ⌂ alpha-skill example/skills ")
+    assert line.startswith("- ⌂ alpha-skill example/skills ")
     assert ".agents/skills.yaml" in "".join(output.split())
 
 

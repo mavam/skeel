@@ -24,6 +24,7 @@ from .io import (
     MARKER_FAILURE,
     MARKER_NOOP,
     MARKER_PREVIEW,
+    MARKER_REMOVE,
     MARKER_SUCCESS,
     ProcessRunner,
     StepResult,
@@ -773,7 +774,7 @@ def remove_status_line(
     if dry_run:
         marker = MARKER_PREVIEW if changed else MARKER_NOOP
     else:
-        marker = MARKER_SUCCESS if changed else MARKER_NOOP
+        marker = MARKER_REMOVE if changed else MARKER_NOOP
     terminal.status_line(
         marker,
         add_label(source, skill),
