@@ -70,10 +70,12 @@ By default, `list`, `diff`, `apply`, and `update` read both
 `.agents/skills.yaml` in the current working directory and
 `~/.agents/skills.yaml`. `list` also reads the corresponding project and user
 skill directories so installed skills are visible even when they are not in a
-manifest. Use `--scope project` or `--scope user` to operate on one scope. Human
-output uses the first column for the marker, the second column for the skill
-name, the third column for the source, and a muted suffix for versions, paths,
-or diagnostic details. User-scope skills include a muted `⌂` after the source.
+manifest. Use `--scope project` or `--scope user` to operate on one scope.
+
+Human output is consistent across commands: the first column is the action
+marker, the second column is a muted scope glyph (`★` for project, `⌂` for
+user), followed by the skill name, the source, and a muted suffix for versions,
+paths, or diagnostic details.
 
 For scripts, pass `--json` to `add`, `apply`, `diff`, `list`, `path`, `remove`,
 or `update` to emit one machine-readable object on stdout.
@@ -83,24 +85,21 @@ or `update` to emit one machine-readable object on stdout.
 Show project and user installed skills together with manifest status. Missing
 manifest skills are marked with `✘`; installed skills that are not declared in
 the manifest still appear in the inventory and include `"managed": false` in
-JSON output. When both project and user rows are present, human output groups
-them under `project` and `user` headers. Sources declared without a skill list
-expand to the installed skills from that source instead of showing `*`.
+JSON output. Project and user skills share one list, each row tagged with its
+scope glyph. Sources declared without a skill list expand to the installed
+skills from that source instead of showing `*`.
 
 ```sh
 uvx skeel list
 ```
 
 ```text
-project
-✔︎ tenzir-docs tenzir/skills main@a5d04ab
-✘ gog openclaw/gogcli
-
-user
-✔︎ skill-creator anthropics/skills ⌂ main@3cf9a8d
-✔︎ wrangler cloudflare/skills ⌂ main@45cc198
-✔︎ clacks ⌂
-✔︎ quarto-brief mavam/quarto-brief ⌂ main@e89c555
+✔︎ ★ tenzir-docs tenzir/skills main@a5d04ab
+✘ ★ gog openclaw/gogcli
+✔︎ ⌂ skill-creator anthropics/skills main@3cf9a8d
+✔︎ ⌂ wrangler cloudflare/skills main@45cc198
+✔︎ ⌂ clacks
+✔︎ ⌂ quarto-brief mavam/quarto-brief main@e89c555
 ```
 
 ### `diff`
@@ -113,10 +112,10 @@ uvx skeel diff
 ```
 
 ```text
-+ wrangler cloudflare/skills
-+ vectorize cloudflare/skills
-- obsolete-skill installed
-- old-experiment installed
++ ★ wrangler cloudflare/skills
++ ★ vectorize cloudflare/skills
+- ★ obsolete-skill installed
+- ★ old-experiment installed
 ```
 
 ### `apply`
@@ -141,9 +140,9 @@ uvx skeel apply
 ```
 
 ```text
-+ wrangler cloudflare/skills
-+ vectorize cloudflare/skills
-- obsolete-skill
++ ★ wrangler cloudflare/skills
++ ★ vectorize cloudflare/skills
+- ★ obsolete-skill
 ```
 
 ### `update`
@@ -160,10 +159,10 @@ uvx skeel update tenzir/skills tenzir-docs
 ```
 
 ```text
-✔︎ teach mattpocock/skills main@975430f
-✔︎ tenzir-docs tenzir/skills main@f3842c1
-✔︎ clacks downstairs-dawgs/clacks
-✘ broken-skill broken/source
+✔︎ ★ teach mattpocock/skills main@975430f
+✔︎ ★ tenzir-docs tenzir/skills main@f3842c1
+✔︎ ★ clacks downstairs-dawgs/clacks
+✘ ★ broken-skill broken/source
 ```
 
 Pinned GitHub entries are updated by resolving the configured pin and
@@ -181,7 +180,7 @@ uvx skeel add tenzir/skills tenzir-docs@main
 ```
 
 ```text
-✔︎ tenzir-docs tenzir/skills .agents/skills.yaml
+✔︎ ★ tenzir-docs tenzir/skills .agents/skills.yaml
 ```
 
 ```sh
@@ -207,7 +206,7 @@ uvx skeel remove tenzir-docs
 ```
 
 ```text
-✔︎ tenzir-docs tenzir/skills .agents/skills.yaml
+✔︎ ★ tenzir-docs tenzir/skills .agents/skills.yaml
 ```
 
 When multiple sources declare the same skill name, disambiguate with `--source`:

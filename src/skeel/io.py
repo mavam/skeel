@@ -39,6 +39,7 @@ MARKER_PREVIEW = OutputMarker("↳", "cyan")
 MARKER_NOOP = OutputMarker("=", "bright_black")
 MARKER_EMPTY = OutputMarker("∅", "bright_black")
 SCOPE_USER = "⌂"
+SCOPE_PROJECT = "★"
 STYLE_REPO = "not bold cyan"
 STYLE_SEPARATOR = "not bold bright_black"
 STYLE_SKILL = "bold black"
@@ -146,8 +147,14 @@ def status_marker(status: str | None) -> OutputMarker | None:
             return None
 
 
-def scope_marker(scope: str | None) -> str | None:
-    return SCOPE_USER if scope == "user" else None
+def scope_glyph(scope: str | None) -> str | None:
+    match scope:
+        case "user":
+            return SCOPE_USER
+        case "project":
+            return SCOPE_PROJECT
+        case _:
+            return None
 
 
 def detail_text(detail: str | None) -> Text:
@@ -163,11 +170,24 @@ def detail_text(detail: str | None) -> Text:
     return text
 
 
-def append_scope_text(text: Text, scope: str | None) -> None:
-    marker = scope_marker(scope)
-    if marker:
+def scoped_label_text(
+    label: str,
+    *,
+    scope: str | None = None,
+    detail: str | None = None,
+) -> Text:
+    """Render a muted scope glyph (when scoped), the label, and an optional detail."""
+    text = Text()
+    glyph = scope_glyph(scope)
+    if glyph:
+        text.append(glyph, style=STYLE_DETAIL)
+        text.append(" ")
+    text.append_text(label_text(label))
+    extra = detail_text(detail)
+    if extra.plain:
         text.append(" ", style=STYLE_DETAIL)
-        text.append(marker, style=STYLE_DETAIL)
+        text.append_text(extra)
+    return text
 
 
 def label_text(label: str) -> Text:
@@ -205,15 +225,13 @@ class StepMarkerColumn(ProgressColumn):
 
 class StepDescriptionColumn(ProgressColumn):
     def render(self, task: Task) -> RenderableType:
-        text = label_text(task.description)
         detail = task.fields.get("detail")
         scope = task.fields.get("scope")
-        append_scope_text(text, scope if isinstance(scope, str) else None)
-        extra = detail_text(detail if isinstance(detail, str) else None)
-        if extra.plain:
-            text.append(" ", style=STYLE_DETAIL)
-            text.append_text(extra)
-        return text
+        return scoped_label_text(
+            task.description,
+            scope=scope if isinstance(scope, str) else None,
+            detail=detail if isinstance(detail, str) else None,
+        )
 
 
 class ProcessRunner:
@@ -272,9 +290,6 @@ class Terminal:
 
     def line(self, message: str | Text = "") -> None:
         self.console.print(message)
-
-    def section_header(self, label: str) -> None:
-        self.line(Text(label, style=STYLE_DETAIL))
 
     def error(self, message: str) -> None:
         self.error_console.print(message, style=MARKER_FAILURE.color)
@@ -361,12 +376,7 @@ class Terminal:
     ) -> Text:
         text = Text(marker.icon, style=marker.color)
         text.append(" ")
-        text.append_text(label_text(label))
-        append_scope_text(text, scope)
-        extra = detail_text(detail)
-        if extra.plain:
-            text.append(" ", style=STYLE_DETAIL)
-            text.append_text(extra)
+        text.append_text(scoped_label_text(label, scope=scope, detail=detail))
         return text
 
     def live_progress_enabled(self) -> bool:

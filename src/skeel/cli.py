@@ -442,20 +442,13 @@ async def command_list(command: CommonOptions) -> int:
                 terminal.no_manifest(context.runtime.manifest_path)
         return 0
 
-    scopes = tuple(dict.fromkeys(row.scope for row in rows))
-    show_scope_headers = len(scopes) > 1
-    for scope_index, scope in enumerate(scopes):
-        if show_scope_headers:
-            if scope_index:
-                terminal.line()
-            terminal.section_header(scope)
-        for row in (row for row in rows if row.scope == scope):
-            terminal.status_line(
-                MARKER_SUCCESS if row.status == "installed" else MARKER_FAILURE,
-                row.label,
-                detail=row.version,
-                scope=row.scope,
-            )
+    for row in rows:
+        terminal.status_line(
+            MARKER_SUCCESS if row.status == "installed" else MARKER_FAILURE,
+            row.label,
+            detail=row.version,
+            scope=row.scope,
+        )
     return 0
 
 

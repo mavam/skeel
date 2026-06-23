@@ -13,4 +13,4 @@ The `list` command now shows a unified project and user inventory, including ins
 skeel list
 ```
 
-Previously, `list` only displayed manifest entries, so manually installed project or user skills could be hidden from the default view. When both scopes have rows, human output now groups them under `project` and `user` headers. Unmanaged installed skills still use the same scope markers as managed skills, and JSON output marks them with `"managed": false`.
+Previously, `list` only displayed manifest entries, so manually installed project or user skills could be hidden from the default view. Human output now shows a single list, and every command renders scope the same way: a muted scope glyph after the action marker (`★` for project, `⌂` for user). Unmanaged installed skills appear alongside managed ones, and JSON output marks them with `"managed": false`.
