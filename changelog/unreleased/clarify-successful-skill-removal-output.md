@@ -3,6 +3,8 @@ title: Clarify successful skill removal output
 type: change
 authors:
   - mavam
+prs:
+  - 11
 created: 2026-06-23T08:59:21.304393Z
 ---
 
