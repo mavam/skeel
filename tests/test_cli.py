@@ -286,7 +286,7 @@ def test_add_human_output_marks_user_scope(tmp_path, capsys, monkeypatch) -> Non
 
     output = capsys.readouterr().out
     line = " ".join(output.split())
-    assert line.startswith("✔︎ ⌂ tenzir-docs tenzir/skills ")
+    assert line.startswith("+ ⌂ tenzir-docs tenzir/skills ")
     assert ".agents/skills.yaml" in "".join(output.split())
 
 
