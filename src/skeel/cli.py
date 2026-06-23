@@ -49,7 +49,7 @@ from .reconcile import (
     apply_plan,
     diff_installed_skills,
     filter_manifest,
-    list_manifest_skills,
+    list_installed_skills,
     resolve_remove_target,
     selector_label,
     selector_matches_manifest,
@@ -172,6 +172,18 @@ class ManifestSelection:
         return bool(self.contexts)
 
 
+@dataclass(frozen=True)
+class ListContext:
+    scope: str
+    runtime: Runtime
+    manifest: Manifest | None
+
+
+@dataclass(frozen=True)
+class ListSelection:
+    contexts: tuple[ListContext, ...]
+
+
 SelectionKey = tuple[Path, Path]
 
 
@@ -223,6 +235,14 @@ def prefer_manifest_context(candidate: ManifestContext, current: ManifestContext
     return candidate.scope == "user" and current.scope != "user"
 
 
+def prefer_list_context(candidate: ListContext, current: ListContext) -> bool:
+    if candidate.manifest is not None and current.manifest is None:
+        return True
+    if candidate.manifest is None and current.manifest is not None:
+        return False
+    return candidate.scope == "user" and current.scope != "user"
+
+
 def select_manifest_contexts(command: CommonOptions) -> ManifestSelection:
     contexts: dict[SelectionKey, ManifestContext] = {}
     missing_paths: dict[SelectionKey, Path] = {}
@@ -248,6 +268,18 @@ def select_manifest_contexts(command: CommonOptions) -> ManifestSelection:
         contexts=tuple(contexts.values()),
         missing_paths=tuple(missing_paths.values()),
     )
+
+
+def select_list_contexts(command: CommonOptions) -> ListSelection:
+    contexts: dict[SelectionKey, ListContext] = {}
+    for scope in manifest_scopes(command):
+        runtime = build_runtime_for_scope(command, scope=scope)
+        key = selection_key(runtime)
+        manifest = load_runtime_manifest(runtime)
+        context = ListContext(scope=scope, runtime=runtime, manifest=manifest)
+        if key not in contexts or prefer_list_context(context, contexts[key]):
+            contexts[key] = context
+    return ListSelection(contexts=tuple(contexts.values()))
 
 
 async def diff_skills(
@@ -394,19 +426,20 @@ async def command_diff(command: CommonOptions) -> int:
 
 async def command_list(command: CommonOptions) -> int:
     terminal = Terminal(json_output=command.json)
-    selection = select_manifest_contexts(command)
+    selection = select_list_contexts(command)
     rows: list[ListedSkill] = []
     for context in selection.contexts:
         installed = await installed_skills(context.runtime.options, context.runtime.runner)
-        rows.extend(list_manifest_skills(context.manifest, installed, scope=context.scope))
+        rows.extend(list_installed_skills(context.manifest, installed, scope=context.scope))
 
     if command.json:
         terminal.json(list_json(rows))
         return 0
 
-    if not rows and not selection.found_manifest:
-        for path in selection.missing_paths:
-            terminal.no_manifest(path)
+    if not rows:
+        for context in selection.contexts:
+            if context.manifest is None:
+                terminal.no_manifest(context.runtime.manifest_path)
         return 0
 
     for row in rows:

@@ -286,7 +286,7 @@ def test_add_human_output_marks_user_scope(tmp_path, capsys, monkeypatch) -> Non
 
     output = capsys.readouterr().out
     line = " ".join(output.split())
-    assert line.startswith("✔︎ tenzir-docs tenzir/skills ⌂ ")
+    assert line.startswith("✔︎ ⌂ tenzir-docs tenzir/skills ")
     assert ".agents/skills.yaml" in "".join(output.split())
 
 
@@ -467,7 +467,7 @@ sources:
 
     output = capsys.readouterr().out
     line = " ".join(output.split())
-    assert line.startswith("✔︎ alpha-skill example/skills ⌂ ")
+    assert line.startswith("✔︎ ⌂ alpha-skill example/skills ")
     assert ".agents/skills.yaml" in "".join(output.split())
 
 
@@ -588,6 +588,168 @@ sources:
     ]
 
 
+def test_list_includes_unmanaged_installed_skills_by_default(tmp_path, capsys, monkeypatch) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    (home / ".agents").mkdir(parents=True)
+    (project / ".agents").mkdir(parents=True)
+    (project / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  tenzir/skills:
+    - tenzir-docs
+""".strip()
+    )
+    (home / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  cloudflare/skills:
+    - wrangler
+""".strip()
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    async def fake_installed_skills(options, runner):
+        if options.directory == project / ".agents" / "skills":
+            return (
+                InstalledSkill(name="tenzir-docs", path=options.directory / "tenzir-docs"),
+                InstalledSkill(
+                    name="obsolete-skill",
+                    path=options.directory / "obsolete-skill",
+                    source_url="https://github.com/example/skills",
+                ),
+            )
+        assert options.directory == home / ".agents" / "skills"
+        return (
+            InstalledSkill(name="wrangler", path=options.directory / "wrangler"),
+            InstalledSkill(name="local-only", path=options.directory / "local-only"),
+        )
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "list"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [
+        (
+            skill["scope"],
+            skill["label"],
+            skill["status"],
+            "manifest" in skill,
+            skill.get("managed", True),
+        )
+        for skill in payload["skills"]
+    ] == [
+        ("project", "tenzir/skills@tenzir-docs", "installed", True, True),
+        ("project", "example/skills@obsolete-skill", "installed", False, False),
+        ("user", "cloudflare/skills@wrangler", "installed", True, True),
+        ("user", "local-only", "installed", False, False),
+    ]
+
+
+def test_list_reports_installed_skills_without_manifest(tmp_path, capsys, monkeypatch) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    (home / ".agents" / "skills").mkdir(parents=True)
+    (project / ".agents" / "skills").mkdir(parents=True)
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    async def fake_installed_skills(options, runner):
+        if options.directory == project / ".agents" / "skills":
+            return (InstalledSkill(name="project-only", path=options.directory / "project-only"),)
+        assert options.directory == home / ".agents" / "skills"
+        return (
+            InstalledSkill(
+                name="mavam",
+                path=options.directory / "mavam",
+                source_url="https://github.com/mavam/skills.git",
+            ),
+        )
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "list"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [
+        (skill["scope"], skill["label"], "manifest" in skill, skill.get("managed", True))
+        for skill in payload["skills"]
+    ] == [
+        ("project", "project-only", False, False),
+        ("user", "mavam/skills@mavam", False, False),
+    ]
+
+
+def test_list_human_output_prefixes_scope_glyph(tmp_path, capsys, monkeypatch) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    (home / ".agents").mkdir(parents=True)
+    (project / ".agents").mkdir(parents=True)
+    (project / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  tenzir/skills:
+    - tenzir-docs
+""".strip()
+    )
+    (home / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  cloudflare/skills:
+    - wrangler
+""".strip()
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    async def fake_installed_skills(options, runner):
+        if options.directory == project / ".agents" / "skills":
+            return (InstalledSkill(name="tenzir-docs", path=options.directory / "tenzir-docs"),)
+        assert options.directory == home / ".agents" / "skills"
+        return (InstalledSkill(name="wrangler", path=options.directory / "wrangler"),)
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["list"]) == 0
+
+    assert capsys.readouterr().out.splitlines() == [
+        "✔︎ ★ tenzir-docs tenzir/skills",
+        "✔︎ ⌂ wrangler cloudflare/skills",
+    ]
+
+
+def test_list_human_output_single_scope_keeps_glyph(tmp_path, capsys, monkeypatch) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    (home / ".agents").mkdir(parents=True)
+    (project / ".agents").mkdir(parents=True)
+    (home / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  cloudflare/skills:
+    - wrangler
+""".strip()
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    async def fake_installed_skills(options, runner):
+        if options.directory == project / ".agents" / "skills":
+            return ()
+        assert options.directory == home / ".agents" / "skills"
+        return (InstalledSkill(name="wrangler", path=options.directory / "wrangler"),)
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["list"]) == 0
+
+    assert capsys.readouterr().out.splitlines() == [
+        "✔︎ ⌂ wrangler cloudflare/skills",
+    ]
+
+
 def test_detail_text_renders_version_transition_without_scope() -> None:
     from skeel.io import detail_text
 
@@ -600,10 +762,13 @@ def test_status_text_renders_scope_marker_without_detail() -> None:
     from skeel.io import MARKER_SUCCESS
 
     text = terminal.status_text(MARKER_SUCCESS, "cloudflare/skills@wrangler", scope="user")
-    assert text.plain.endswith(" ⌂")
+    assert text.plain == "✔︎ ⌂ wrangler cloudflare/skills"
 
     text = terminal.status_text(MARKER_SUCCESS, "cloudflare/skills@wrangler", scope="project")
-    assert "⌂" not in text.plain
+    assert text.plain == "✔︎ ★ wrangler cloudflare/skills"
+
+    text = terminal.status_text(MARKER_SUCCESS, "cloudflare/skills@wrangler")
+    assert text.plain == "✔︎ wrangler cloudflare/skills"
 
 
 def test_status_text_renders_scope_marker_before_detail() -> None:
@@ -617,7 +782,7 @@ def test_status_text_renders_scope_marker_before_detail() -> None:
         scope="user",
     )
 
-    assert text.plain == "! clacks downstairs-dawgs/clacks ⌂ missing GitHub metadata"
+    assert text.plain == "! ⌂ clacks downstairs-dawgs/clacks missing GitHub metadata"
 
 
 def test_diff_marks_user_scope_across_project_and_user_manifests(
@@ -657,11 +822,11 @@ sources:
     ]
     assert payload["in_sync"] is False
 
-    # The human output marks the user-scope row with the house, project stays bare.
+    # The human output tags each row with its scope glyph after the marker.
     assert main(["diff"]) == 1
     assert capsys.readouterr().out.splitlines() == [
-        "+ tenzir-docs tenzir/skills",
-        "+ wrangler cloudflare/skills ⌂",
+        "+ ★ tenzir-docs tenzir/skills",
+        "+ ⌂ wrangler cloudflare/skills",
     ]
 
 
@@ -760,10 +925,10 @@ sources:
     assert main(["--manifest", str(path), "diff"]) == 1
 
     assert capsys.readouterr().out.splitlines() == [
-        "+ wrangler cloudflare/skills",
-        "+ vectorize cloudflare/skills",
-        "- obsolete-skill installed",
-        "- old-experiment installed",
+        "+ ★ wrangler cloudflare/skills",
+        "+ ★ vectorize cloudflare/skills",
+        "- ★ obsolete-skill installed",
+        "- ★ old-experiment installed",
     ]
 
 
@@ -785,7 +950,7 @@ sources:
     assert main(["--manifest", str(path), "diff"]) == 1
 
     assert capsys.readouterr().out.splitlines() == [
-        "+ example/skills",
+        "+ ★ example/skills",
     ]
 
 
@@ -850,7 +1015,7 @@ sources:
     assert main(["--manifest", str(path), "apply"]) == 7
 
     captured = capsys.readouterr()
-    assert "✘ gog openclaw/gogcli" in captured.err
+    assert "✘ ★ gog openclaw/gogcli" in captured.err
     assert "failed to install skill: openclaw/gogcli@gog" in captured.err
     assert "process stdout" not in captured.out + captured.err
     assert "process stderr" in captured.err
@@ -1230,7 +1395,7 @@ def test_update_summary_renders_changed_rows_and_tally(tmp_path, capsys, monkeyp
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.splitlines() == [
-        "↑ tenzir-ship tenzir/skills ⌂ main@9f3e1a2 → main@12c7aa3",
+        "↑ ⌂ tenzir-ship tenzir/skills main@9f3e1a2 → main@12c7aa3",
         "",
         "1 updated",
         "27 current",
@@ -1300,9 +1465,9 @@ def test_update_verbose_lists_current_rows(tmp_path, capsys, monkeypatch) -> Non
     assert main(["--manifest", str(path), "--scope", "user", "update", "-v"]) == 0
 
     err = capsys.readouterr().err
-    assert "↑ tenzir-ship tenzir/skills ⌂ main@9f3e1a2 → main@12c7aa3" in err
-    assert "· clacks downstairs-dawgs/clacks ⌂" in err
-    assert "· gog openclaw/gogcli ⌂" in err
+    assert "↑ ⌂ tenzir-ship tenzir/skills main@9f3e1a2 → main@12c7aa3" in err
+    assert "· ⌂ clacks downstairs-dawgs/clacks" in err
+    assert "· ⌂ gog openclaw/gogcli" in err
     assert "1 updated" in err
     assert "2 current" in err
 
@@ -1344,8 +1509,8 @@ def test_update_summary_counts_skips_and_failures(tmp_path, capsys, monkeypatch)
     assert main(["--manifest", str(path), "--scope", "user", "update"]) == 7
 
     err = capsys.readouterr().err
-    assert "↑ tenzir-ship tenzir/skills ⌂ main@9f3e1a2 → main@12c7aa3" in err
-    assert "! caveman mattpocock/skills ⌂ pinned" in err
+    assert "↑ ⌂ tenzir-ship tenzir/skills main@9f3e1a2 → main@12c7aa3" in err
+    assert "! ⌂ caveman mattpocock/skills pinned" in err
     assert "1 updated" in err
     assert "1 skipped" in err
     assert "1 failed" in err
