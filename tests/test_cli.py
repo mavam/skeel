@@ -950,7 +950,7 @@ sources:
     assert main(["--manifest", str(path), "diff"]) == 1
 
     assert capsys.readouterr().out.splitlines() == [
-        "+ example/skills",
+        "+ ★ example/skills",
     ]
 
 
