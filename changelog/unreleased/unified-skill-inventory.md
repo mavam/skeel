@@ -5,6 +5,8 @@ authors:
   - mavam
   - codex
 created: 2026-06-22T16:11:10.04516Z
+prs:
+  - 10
 ---
 
 The `list` command now shows a unified project and user inventory, including installed skills that are not declared in a manifest:
