@@ -1,0 +1,9 @@
+created: 2026-06-23
+title: Unified skill inventory
+intro: >-
+  This release makes skeel's command output more consistent across project and user
+  scopes. It also improves list, diff, add, and remove feedback so users can see unmanaged
+  skills and pending manifest changes more clearly.
+source:
+  mode: sync-stable-queue
+  previous_stable: v0.9.0
