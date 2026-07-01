@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -17,6 +18,12 @@ from skeel.io import (
     run_steps,
 )
 from skeel.manifest import Manifest, SkillSpec, SourceSpec, load_manifest
+
+ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def plain(text: str) -> str:
+    return ANSI_ESCAPE.sub("", text)
 
 
 def write_manifest(tmp_path: Path, content: str) -> Path:
@@ -120,6 +127,140 @@ def test_version_flag_prints_version(capsys) -> None:
     assert capsys.readouterr().out.strip() == __version__
 
 
+def test_help_lists_scope_shortcuts(capsys) -> None:
+    assert main([]) == 0
+
+    output = plain(capsys.readouterr().out)
+    assert "-g, --user" in output
+    assert "Alias: --global" in output
+    assert "-a, --all" in output
+
+
+def test_path_defaults_to_project_scope(tmp_path, capsys, monkeypatch) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    home.mkdir()
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    assert main(["path"]) == 0
+
+    assert capsys.readouterr().out.strip() == ".agents/skills.yaml"
+
+
+@pytest.mark.parametrize("selector", ["-g", "--user", "--global"])
+@pytest.mark.parametrize("after_subcommand", [False, True])
+def test_path_user_scope_shortcuts(
+    tmp_path, capsys, monkeypatch, selector: str, after_subcommand: bool
+) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    home.mkdir()
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    args = ["path", selector] if after_subcommand else [selector, "path"]
+    assert main(args) == 0
+
+    assert (
+        Path(capsys.readouterr().out.strip()).resolve()
+        == (home / ".agents" / "skills.yaml").resolve()
+    )
+
+
+def test_path_all_scopes_json(tmp_path, capsys, monkeypatch) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    home.mkdir()
+    project.mkdir()
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    assert main(["--json", "path", "-a"]) == 0
+
+    assert json.loads(capsys.readouterr().out) == {
+        "paths": [
+            {"scope": "project", "path": ".agents/skills.yaml"},
+            {"scope": "user", "path": str(home / ".agents" / "skills.yaml")},
+        ]
+    }
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["path", "-a"],
+        ["apply", "--dry-run", "-a"],
+        ["remove", "-a", "alpha-skill"],
+    ],
+)
+def test_all_scopes_rejects_cli_manifest(args, tmp_path, capsys, monkeypatch) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  example/skills:
+    - alpha-skill
+""",
+    )
+
+    async def fake_installed_skills(options, runner):
+        raise AssertionError(f"unexpected skill directory: {options.directory}")
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--manifest", str(path), *args]) == 2
+
+    assert "--all cannot be used with an explicit manifest" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["path", "-a"],
+        ["apply", "--dry-run", "-a"],
+        ["remove", "-a", "alpha-skill"],
+    ],
+)
+def test_all_scopes_rejects_env_manifest(args, tmp_path, capsys, monkeypatch) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  example/skills:
+    - alpha-skill
+""",
+    )
+    monkeypatch.setenv("SKEEL_MANIFEST", str(path))
+
+    async def fake_installed_skills(options, runner):
+        raise AssertionError(f"unexpected skill directory: {options.directory}")
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(args) == 2
+
+    assert "--all cannot be used with an explicit manifest" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--scope", "user", "-g", "path"],
+        ["--scope", "user", "--scope", "project", "path"],
+        ["-g", "--user", "path"],
+        ["-ga", "path"],
+        ["--all", "--user", "path"],
+    ],
+)
+def test_multiple_scope_selectors_are_rejected(args, capsys) -> None:
+    assert main(args) == 2
+
+    assert "multiple scope selectors are not allowed" in capsys.readouterr().err
+
+
 def test_interrupt_handling_suppresses_unraisable_keyboard_interrupt(monkeypatch) -> None:
     forwarded: list[object] = []
 
@@ -197,6 +338,42 @@ sources:
         "tenzir-ecs",
     ]
     assert payload["steps"][1]["command"] == ["rm", "-rf", str(target / "obsolete")]
+
+
+def test_apply_defaults_to_project_scope(tmp_path, capsys, monkeypatch) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    (home / ".agents").mkdir(parents=True)
+    (project / ".agents").mkdir(parents=True)
+    (project / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  project/skills:
+    - local-alpha
+""".strip()
+    )
+    (home / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  user/skills:
+    - user-beta
+""".strip()
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    async def fake_installed_skills(options, runner):
+        assert options.directory == project / ".agents" / "skills"
+        return ()
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "apply", "--dry-run"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [(step["scope"], step["label"]) for step in payload["steps"]] == [
+        ("project", "project/skills@local-alpha"),
+    ]
 
 
 def test_apply_reinstall_can_target_manifest_source(tmp_path, capsys, monkeypatch) -> None:
@@ -316,6 +493,12 @@ def test_add_human_output_marks_user_scope(tmp_path, capsys, monkeypatch) -> Non
     line = " ".join(output.split())
     assert line.startswith("+ ⌂ tenzir-docs tenzir/skills ")
     assert ".agents/skills.yaml" in "".join(output.split())
+
+
+def test_add_rejects_all_scopes(capsys) -> None:
+    assert main(["add", "-a", "tenzir/skills"]) == 2
+
+    assert "add does not support --all" in capsys.readouterr().err
 
 
 def test_remove_writes_manifest_in_keyed_shape(tmp_path, capsys, monkeypatch) -> None:
@@ -447,7 +630,7 @@ sources:
     assert path.read_text() == original
 
 
-def test_remove_resolves_user_scope_by_default(tmp_path, capsys, monkeypatch) -> None:
+def test_remove_resolves_user_scope_shortcut(tmp_path, capsys, monkeypatch) -> None:
     home = tmp_path / "home"
     project = tmp_path / "project"
     (home / ".agents").mkdir(parents=True)
@@ -464,7 +647,7 @@ sources:
     monkeypatch.chdir(project)
     monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
 
-    assert main(["--json", "remove", "alpha-skill"]) == 0
+    assert main(["--json", "-g", "remove", "alpha-skill"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     manifest = load_manifest(user_manifest)
@@ -475,7 +658,7 @@ sources:
     assert [skill.name for skill in manifest.sources[0].skills] == ["beta-skill"]
 
 
-def test_remove_human_output_marks_default_user_scope(tmp_path, capsys, monkeypatch) -> None:
+def test_remove_human_output_marks_user_scope_shortcut(tmp_path, capsys, monkeypatch) -> None:
     home = tmp_path / "home"
     project = tmp_path / "project"
     (home / ".agents").mkdir(parents=True)
@@ -491,7 +674,7 @@ sources:
     monkeypatch.chdir(project)
     monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
 
-    assert main(["remove", "alpha-skill"]) == 0
+    assert main(["remove", "-g", "alpha-skill"]) == 0
 
     output = capsys.readouterr().out
     line = " ".join(output.split())
@@ -499,7 +682,7 @@ sources:
     assert ".agents/skills.yaml" in "".join(output.split())
 
 
-def test_remove_requires_scope_when_default_matches_project_and_user(
+def test_remove_defaults_to_project_when_project_and_user_match(
     tmp_path, capsys, monkeypatch
 ) -> None:
     home = tmp_path / "home"
@@ -523,12 +706,48 @@ sources:
     monkeypatch.chdir(project)
     monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
 
-    assert main(["remove", "alpha-skill"]) == 2
+    assert main(["--json", "remove", "alpha-skill"]) == 0
 
-    error = capsys.readouterr().err
-    assert "matches multiple scopes" in error
-    assert "--scope project" in error
-    assert "--scope user" in error
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["manifest"] == ".agents/skills.yaml"
+    assert "scope" not in payload
+    assert load_manifest(home / ".agents" / "skills.yaml").desired_skill_names == {"alpha-skill"}
+    assert load_manifest(project / ".agents" / "skills.yaml").desired_skill_names == set()
+
+
+def test_remove_all_removes_project_and_user_matches(tmp_path, capsys, monkeypatch) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    (home / ".agents").mkdir(parents=True)
+    (project / ".agents").mkdir(parents=True)
+    (project / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  example/skills:
+    - alpha-skill
+""".strip()
+    )
+    (home / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  example/skills:
+    - alpha-skill
+""".strip()
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    assert main(["--json", "remove", "-a", "alpha-skill"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [
+        (removal["scope"], removal["source"], removal["skill"]) for removal in payload["removals"]
+    ] == [
+        ("project", "example/skills", "alpha-skill"),
+        ("user", "example/skills", "alpha-skill"),
+    ]
+    assert load_manifest(project / ".agents" / "skills.yaml").desired_skill_names == set()
+    assert load_manifest(home / ".agents" / "skills.yaml").desired_skill_names == set()
 
 
 def test_remove_source_requires_manifest_match(tmp_path, capsys) -> None:
@@ -605,7 +824,7 @@ sources:
 
     monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
 
-    assert main(["--json", "list"]) == 0
+    assert main(["--json", "list", "-a"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert [(skill["scope"], skill["label"], skill["status"]) for skill in payload["skills"]] == [
@@ -671,8 +890,6 @@ sources:
     ] == [
         ("project", "tenzir/skills@tenzir-docs", "installed", True, True),
         ("project", "example/skills@obsolete-skill", "installed", False, False),
-        ("user", "cloudflare/skills@wrangler", "installed", True, True),
-        ("user", "local-only", "installed", False, False),
     ]
 
 
@@ -687,14 +904,7 @@ def test_list_reports_installed_skills_without_manifest(tmp_path, capsys, monkey
     async def fake_installed_skills(options, runner):
         if options.directory == project / ".agents" / "skills":
             return (InstalledSkill(name="project-only", path=options.directory / "project-only"),)
-        assert options.directory == home / ".agents" / "skills"
-        return (
-            InstalledSkill(
-                name="mavam",
-                path=options.directory / "mavam",
-                source_url="https://github.com/mavam/skills.git",
-            ),
-        )
+        raise AssertionError(f"unexpected skill directory: {options.directory}")
 
     monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
 
@@ -706,7 +916,6 @@ def test_list_reports_installed_skills_without_manifest(tmp_path, capsys, monkey
         for skill in payload["skills"]
     ] == [
         ("project", "project-only", False, False),
-        ("user", "mavam/skills@mavam", False, False),
     ]
 
 
@@ -740,7 +949,7 @@ sources:
 
     monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
 
-    assert main(["list"]) == 0
+    assert main(["list", "-a"]) == 0
 
     assert capsys.readouterr().out.splitlines() == [
         "✔︎ ★ tenzir-docs tenzir/skills",
@@ -771,7 +980,7 @@ sources:
 
     monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
 
-    assert main(["list"]) == 0
+    assert main(["list", "-g"]) == 0
 
     assert capsys.readouterr().out.splitlines() == [
         "✔︎ ⌂ wrangler cloudflare/skills",
@@ -842,7 +1051,7 @@ sources:
 
     monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
 
-    assert main(["--json", "diff"]) == 1
+    assert main(["--json", "diff", "-a"]) == 1
     payload = json.loads(capsys.readouterr().out)
     assert [(skill["scope"], skill["name"]) for skill in payload["missing"]] == [
         ("project", "tenzir-docs"),
@@ -851,10 +1060,46 @@ sources:
     assert payload["in_sync"] is False
 
     # The human output tags each row with its scope glyph after the marker.
-    assert main(["diff"]) == 1
+    assert main(["diff", "-a"]) == 1
     assert capsys.readouterr().out.splitlines() == [
         "+ ★ tenzir-docs tenzir/skills",
         "+ ⌂ wrangler cloudflare/skills",
+    ]
+
+
+def test_diff_defaults_to_project_scope(tmp_path, capsys, monkeypatch) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    (home / ".agents").mkdir(parents=True)
+    (project / ".agents").mkdir(parents=True)
+    (project / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  project/skills:
+    - local-alpha
+""".strip()
+    )
+    (home / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  user/skills:
+    - user-beta
+""".strip()
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    async def fake_installed_skills(options, runner):
+        assert options.directory == project / ".agents" / "skills"
+        return ()
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "diff"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [(skill["scope"], skill["name"]) for skill in payload["missing"]] == [
+        ("project", "local-alpha"),
     ]
 
 
@@ -878,7 +1123,7 @@ sources:
 
     monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
 
-    assert main(["--json", "list"]) == 0
+    assert main(["--json", "list", "-a"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert calls == [home / ".agents" / "skills"]
@@ -1612,13 +1857,53 @@ sources:
 
     monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
 
-    assert main(["--json", "update", "--dry-run"]) == 0
+    assert main(["--json", "update", "--dry-run", "-a"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert calls == [target]
     assert [step["label"] for step in payload["steps"]] == [
         "tenzir/skills@tenzir-docs",
         "cloudflare/skills@wrangler",
+    ]
+
+
+def test_update_defaults_to_project_scope(tmp_path, capsys, monkeypatch) -> None:
+    project = tmp_path / "project"
+    home = tmp_path / "home"
+    project_target = project / ".agents" / "skills"
+    user_target = home / ".agents" / "skills"
+    project_target.mkdir(parents=True)
+    user_target.mkdir(parents=True)
+    (project / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  project/skills:
+    - local-alpha
+""".strip()
+    )
+    (home / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  user/skills:
+    - user-beta
+""".strip()
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    async def fake_installed_skills(options, runner):
+        del runner
+        if options.directory == project_target:
+            return (InstalledSkill(name="local-alpha", path=project_target / "local-alpha"),)
+        raise AssertionError(f"unexpected skill directory: {options.directory}")
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "update", "--dry-run"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [(step["label"], step["scope"]) for step in payload["steps"]] == [
+        ("project/skills@local-alpha", "project"),
     ]
 
 
@@ -1675,7 +1960,7 @@ sources:
     monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
     monkeypatch.setattr("skeel.cli.run_steps", fake_run_steps)
 
-    assert main(["--json", "update"]) == 0
+    assert main(["--json", "update", "-a"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert len(calls) == 1

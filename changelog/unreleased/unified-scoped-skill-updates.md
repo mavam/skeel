@@ -7,12 +7,13 @@ authors:
 created: 2026-07-01T15:45:57.076647Z
 prs:
   - 12
+  - 13
 ---
 
 The `update` command now schedules project- and user-scoped skills in one continuous run when both scopes are selected:
 
 ```sh
-skeel update
+skeel update -a
 ```
 
 This keeps live progress continuous instead of completing one scope before starting the next.

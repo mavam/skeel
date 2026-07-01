@@ -80,7 +80,25 @@ def scope_arg(*, inherited: bool = False) -> str | None:
         None,
         parser=parse_scope,
         inherited=inherited,
-        help="Target scope. One of: project, user.",
+        help="Target scope. One of: project, user. Defaults to project.",
+    )
+
+
+def user_scope_arg(*, inherited: bool = False) -> bool:
+    return arg(
+        False,
+        short="g",
+        inherited=inherited,
+        help="Use user/global scope. Alias: --global.",
+    )
+
+
+def all_scopes_arg(*, inherited: bool = False) -> bool:
+    return arg(
+        False,
+        short="a",
+        inherited=inherited,
+        help="Use both project and user scopes.",
     )
 
 
@@ -120,6 +138,8 @@ def verbose_arg(*, inherited: bool = False) -> bool:
 class CommonOptions(Protocol):
     manifest: str | None
     scope: str | None
+    user: bool
+    all: bool
     dry_run: bool
     json: bool
 
@@ -194,6 +214,8 @@ def build_runtime(command: CommonOptions) -> Runtime:
 
 
 def single_scope(command: CommonOptions) -> str:
+    if command.user:
+        return "user"
     return command.scope or "project"
 
 
@@ -212,11 +234,9 @@ def build_runtime_for_scope(command: CommonOptions, *, scope: str) -> Runtime:
 
 
 def manifest_scopes(command: CommonOptions) -> tuple[str, ...]:
-    if command.manifest is not None or os.environ.get("SKEEL_MANIFEST") is not None:
-        return (single_scope(command),)
-    if command.scope is None:
+    if command.all:
         return ("project", "user")
-    return (command.scope,)
+    return (single_scope(command),)
 
 
 def load_runtime_manifest(runtime: Runtime) -> Manifest | None:
@@ -382,16 +402,42 @@ def remove_json(
     return payload
 
 
+def remove_all_json(
+    removals: Sequence[dict[str, object]],
+    *,
+    dry_run: bool,
+) -> dict[str, object]:
+    return {
+        "dry_run": dry_run,
+        "removals": list(removals),
+    }
+
+
 def install_failure_message(step: StepResult) -> str:
     return f"failed to install skill: {step.label}"
 
 
 async def command_path(command: CommonOptions) -> int:
+    if command.all:
+        paths = [
+            {
+                "scope": scope,
+                "path": str(build_runtime_for_scope(command, scope=scope).manifest_path),
+            }
+            for scope in manifest_scopes(command)
+        ]
+        if command.json:
+            Terminal(json_output=True).json({"paths": paths})
+        else:
+            for path in paths:
+                sys.stdout.write(f"{path['scope']}\t{path['path']}\n")
+        return 0
+
     runtime = build_runtime(command)
     if command.json:
         runtime.terminal.json({"path": str(runtime.manifest_path)})
     else:
-        runtime.terminal.line(str(runtime.manifest_path))
+        sys.stdout.write(str(runtime.manifest_path) + "\n")
     return 0
 
 
@@ -593,6 +639,12 @@ def finish_apply_results(
 
 
 async def command_add(command: AddOptions) -> int:
+    if command.all:
+        Terminal(json_output=command.json).error(
+            "add does not support --all; select one scope with --scope project or --scope user"
+        )
+        return 2
+
     runtime = build_runtime(command)
     scope = single_scope(command)
     update = upsert_manifest_source(
@@ -635,7 +687,86 @@ async def command_add(command: AddOptions) -> int:
     return await apply_manifest(command, runtime, update.manifest, scope=scope)
 
 
+async def command_remove_all(command: RemoveOptions) -> int:
+    terminal = Terminal(json_output=command.json)
+    source = command.source
+    skill = command.skill
+    if source is None and skill is None:
+        terminal.error("skill or --source is required")
+        return 2
+
+    selection = select_manifest_contexts(command)
+    if not selection.found_manifest:
+        for path in selection.missing_paths:
+            terminal.no_manifest(path)
+        return 2
+
+    matches: list[tuple[ManifestContext, RemoveTarget]] = []
+    for context in selection.contexts:
+        try:
+            target = resolve_remove_target(context.manifest, skill, source=source)
+        except AmbiguousRemoveTarget as error:
+            terminal.error(str(error))
+            return 2
+        if target is not None:
+            matches.append((context, target))
+
+    if not matches:
+        terminal.error(no_remove_target_message(source, skill))
+        return 2
+
+    removals: list[dict[str, object]] = []
+    results: list[StepResult] = []
+    exit_code = 0
+    for context, target in matches:
+        update = remove_manifest_source(
+            context.runtime.manifest_path,
+            target.source,
+            target.skill,
+            dry_run=command.dry_run,
+        )
+        removals.append(
+            {
+                "scope": context.scope,
+                "manifest": str(context.runtime.manifest_path),
+                "source": target.source,
+                "changed": update.changed,
+                **({"skill": target.skill} if target.skill is not None else {}),
+            }
+        )
+        if not command.json:
+            remove_status_line(
+                terminal,
+                target.source,
+                target.skill,
+                command.dry_run,
+                update.changed,
+                manifest_path=context.runtime.manifest_path,
+                scope=context.scope,
+            )
+        if command.apply:
+            steps = await apply_steps(update.manifest, context.runtime, scope=context.scope)
+            context_results, context_exit_code = await run_apply_steps(
+                command, context.runtime, steps
+            )
+            results.extend(context_results)
+            if context_exit_code and not exit_code:
+                exit_code = context_exit_code
+
+    if command.json:
+        if command.apply:
+            terminal.json(run_json(dry_run=command.dry_run, steps=results))
+        else:
+            terminal.json(remove_all_json(removals, dry_run=command.dry_run))
+    elif command.apply and exit_code:
+        finish_apply_results(command, terminal, results, exit_code)
+    return exit_code
+
+
 async def command_remove(command: RemoveOptions) -> int:
+    if command.all:
+        return await command_remove_all(command)
+
     runtime = build_runtime(command)
     source = command.source
     skill = command.skill
@@ -643,55 +774,24 @@ async def command_remove(command: RemoveOptions) -> int:
         runtime.terminal.error("skill or --source is required")
         return 2
 
-    if (
-        command.manifest is None
-        and command.scope is None
-        and os.environ.get("SKEEL_MANIFEST") is None
-    ):
-        selection = select_manifest_contexts(command)
-        matches: list[tuple[ManifestContext, RemoveTarget]] = []
-        for context in selection.contexts:
-            try:
-                target = resolve_remove_target(context.manifest, skill, source=source)
-            except AmbiguousRemoveTarget as error:
-                runtime.terminal.error(str(error))
-                return 2
-            if target is not None:
-                matches.append((context, target))
-        if not matches:
+    scope = single_scope(command)
+    manifest_exists = runtime.manifest_path.exists()
+    if manifest_exists:
+        try:
+            target = resolve_remove_target(
+                load_manifest(runtime.manifest_path), skill, source=source
+            )
+        except AmbiguousRemoveTarget as error:
+            runtime.terminal.error(str(error))
+            return 2
+        if target is None:
             runtime.terminal.error(no_remove_target_message(source, skill))
             return 2
-        if len(matches) > 1:
-            choices = ", ".join(f"--scope {context.scope}" for context, _target in matches)
-            runtime.terminal.error(
-                f"remove target matches multiple scopes; disambiguate with {choices}"
-            )
-            return 2
-        context, target = matches[0]
-        runtime = context.runtime
         source = target.source
         skill = target.skill
-        scope = context.scope
-        manifest_exists = True
-    else:
-        scope = single_scope(command)
-        manifest_exists = runtime.manifest_path.exists()
-        if manifest_exists:
-            try:
-                target = resolve_remove_target(
-                    load_manifest(runtime.manifest_path), skill, source=source
-                )
-            except AmbiguousRemoveTarget as error:
-                runtime.terminal.error(str(error))
-                return 2
-            if target is None:
-                runtime.terminal.error(no_remove_target_message(source, skill))
-                return 2
-            source = target.source
-            skill = target.skill
-        elif source is None:
-            runtime.terminal.error(f"no manifest at {runtime.manifest_path}")
-            return 2
+    elif source is None:
+        runtime.terminal.error(f"no manifest at {runtime.manifest_path}")
+        return 2
 
     update = remove_manifest_source(
         runtime.manifest_path,
@@ -863,6 +963,8 @@ class PathCommand(SkeelCommand):
 
     manifest: str | None = manifest_arg(inherited=True)
     scope: str | None = scope_arg(inherited=True)
+    user: bool = user_scope_arg(inherited=True)
+    all: bool = all_scopes_arg(inherited=True)
     dry_run: bool = dry_run_arg(inherited=True)
     json: bool = json_arg(inherited=True)
 
@@ -881,6 +983,8 @@ class Diff(SkeelCommand):
 
     manifest: str | None = manifest_arg(inherited=True)
     scope: str | None = scope_arg(inherited=True)
+    user: bool = user_scope_arg(inherited=True)
+    all: bool = all_scopes_arg(inherited=True)
     dry_run: bool = dry_run_arg(inherited=True)
     json: bool = json_arg(inherited=True)
 
@@ -894,6 +998,8 @@ class ListCommand(SkeelCommand):
 
     manifest: str | None = manifest_arg(inherited=True)
     scope: str | None = scope_arg(inherited=True)
+    user: bool = user_scope_arg(inherited=True)
+    all: bool = all_scopes_arg(inherited=True)
     dry_run: bool = dry_run_arg(inherited=True)
     json: bool = json_arg(inherited=True)
 
@@ -920,6 +1026,8 @@ class Apply(SkeelCommand):
     )
     manifest: str | None = manifest_arg(inherited=True)
     scope: str | None = scope_arg(inherited=True)
+    user: bool = user_scope_arg(inherited=True)
+    all: bool = all_scopes_arg(inherited=True)
     dry_run: bool = dry_run_arg(inherited=True)
     reinstall: bool = reinstall_arg()
     json: bool = json_arg(inherited=True)
@@ -945,6 +1053,8 @@ class Add(SkeelCommand):
     )
     manifest: str | None = manifest_arg(inherited=True)
     scope: str | None = scope_arg(inherited=True)
+    user: bool = user_scope_arg(inherited=True)
+    all: bool = all_scopes_arg(inherited=True)
     dry_run: bool = dry_run_arg(inherited=True)
     json: bool = json_arg(inherited=True)
 
@@ -970,6 +1080,8 @@ class Remove(SkeelCommand):
     )
     manifest: str | None = manifest_arg(inherited=True)
     scope: str | None = scope_arg(inherited=True)
+    user: bool = user_scope_arg(inherited=True)
+    all: bool = all_scopes_arg(inherited=True)
     dry_run: bool = dry_run_arg(inherited=True)
     json: bool = json_arg(inherited=True)
 
@@ -991,6 +1103,8 @@ class Update(SkeelCommand):
     )
     manifest: str | None = manifest_arg(inherited=True)
     scope: str | None = scope_arg(inherited=True)
+    user: bool = user_scope_arg(inherited=True)
+    all: bool = all_scopes_arg(inherited=True)
     dry_run: bool = dry_run_arg(inherited=True)
     verbose: bool = verbose_arg()
     json: bool = json_arg(inherited=True)
@@ -1005,6 +1119,8 @@ class Skeel(Command):
 
     manifest: str | None = manifest_arg()
     scope: str | None = scope_arg()
+    user: bool = user_scope_arg()
+    all: bool = all_scopes_arg()
     dry_run: bool = dry_run_arg()
     json: bool = json_arg()
     version: bool = arg(False, help="Print the skeel version and exit.")
@@ -1042,6 +1158,79 @@ def configure_interrupt_handling() -> None:
     sys.unraisablehook = unraisable_hook
 
 
+def normalize_short_options(args: Sequence[str]) -> list[str]:
+    normalized: list[str] = []
+    end_of_options = False
+    for value in args:
+        if end_of_options:
+            normalized.append(value)
+            continue
+        if value == "--":
+            normalized.append(value)
+            end_of_options = True
+        elif value.startswith("-") and "=" in value:
+            normalized.extend(value.split("=", 1))
+        elif (
+            value.startswith("-")
+            and not value.startswith("--")
+            and len(value) > 2
+            and value[1:].isalpha()
+        ):
+            normalized.extend(f"-{letter}" for letter in value[1:])
+        else:
+            normalized.append(value)
+    return normalized
+
+
+def scope_selectors(args: Sequence[str]) -> list[str]:
+    selectors: list[str] = []
+    for value in normalize_short_options(args):
+        if value == "--":
+            break
+        if value in {"--scope", "--user", "--global", "--all", "-g", "-a"}:
+            selectors.append(value)
+    return selectors
+
+
+def has_explicit_manifest_selector(args: Sequence[str]) -> bool:
+    for value in normalize_short_options(args):
+        if value == "--":
+            break
+        if value in {"--manifest", "-m"}:
+            return True
+    return False
+
+
+def validate_scope_selectors(args: Sequence[str]) -> None:
+    selectors = scope_selectors(args)
+    if len(selectors) > 1:
+        formatted = ", ".join(selectors)
+        raise ValueError(f"multiple scope selectors are not allowed: {formatted}")
+    if selectors in (["--all"], ["-a"]) and (
+        has_explicit_manifest_selector(args) or os.environ.get("SKEEL_MANIFEST") is not None
+    ):
+        raise ValueError(
+            "--all cannot be used with an explicit manifest; omit --all or select one scope"
+        )
+
+
+def normalize_scope_aliases(args: Sequence[str]) -> list[str]:
+    normalized: list[str] = []
+    end_of_options = False
+    for value in args:
+        if end_of_options:
+            normalized.append(value)
+            continue
+        if value == "--":
+            normalized.append(value)
+            end_of_options = True
+        elif value == "--global":
+            normalized.append("--user")
+        else:
+            normalized.append(value)
+    return normalized
+
+
 def main(argv: list[str] | None = None) -> int:
     configure_clypi()
     configure_interrupt_handling()
@@ -1053,6 +1242,8 @@ def main(argv: list[str] | None = None) -> int:
         if args == ["--version"]:
             print(__version__)
             return 0
+        validate_scope_selectors(args)
+        args = normalize_scope_aliases(args)
         command = Skeel.parse(args)
         return asyncio.run(command.execute())
     except SystemExit as error:
