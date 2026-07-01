@@ -41,6 +41,47 @@ def write_update_manifest(tmp_path: Path, sources: dict[str, list[str]]) -> Path
     return write_manifest(tmp_path, "\n".join(lines))
 
 
+def write_shadowed_scope(tmp_path: Path, monkeypatch) -> tuple[Path, Path, Path, Path]:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    project_target = project / ".agents" / "skills"
+    user_target = home / ".agents" / "skills"
+    project_target.mkdir(parents=True)
+    user_target.mkdir(parents=True)
+    (project / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  project/skills:
+    - wrangler
+""".strip()
+    )
+    (home / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  cloudflare/skills:
+    - wrangler
+""".strip()
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+    return home, project, project_target, user_target
+
+
+def assert_shadow_warning(payload: dict[str, object]) -> None:
+    warnings = payload["warnings"]
+    assert isinstance(warnings, list)
+    assert len(warnings) == 1
+    warning = warnings[0]
+    assert warning["type"] == "shadowed-skill"
+    assert warning["name"] == "wrangler"
+    assert warning["shadowing_scope"] == "project"
+    assert warning["shadowed_scope"] == "user"
+    assert warning["project_label"] == "project/skills@wrangler"
+    assert warning["user_label"] == "cloudflare/skills@wrangler"
+    assert "project scope is effective" in warning["message"]
+    assert "user/global scope was skipped" in warning["message"]
+
+
 def write_skill_metadata(path: Path, *, name: str, source: str, sha: str) -> None:
     path.mkdir(parents=True, exist_ok=True)
     (path / "SKILL.md").write_text(
@@ -374,6 +415,23 @@ sources:
     assert [(step["scope"], step["label"]) for step in payload["steps"]] == [
         ("project", "project/skills@local-alpha"),
     ]
+
+
+def test_apply_all_warns_and_skips_shadowed_user_skill(tmp_path, capsys, monkeypatch) -> None:
+    write_shadowed_scope(tmp_path, monkeypatch)
+
+    async def fake_installed_skills(options, runner):
+        return ()
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "apply", "-a", "--dry-run"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [(step["scope"], step["label"]) for step in payload["steps"]] == [
+        ("project", "project/skills@wrangler"),
+    ]
+    assert_shadow_warning(payload)
 
 
 def test_apply_reinstall_can_target_manifest_source(tmp_path, capsys, monkeypatch) -> None:
@@ -1101,6 +1159,84 @@ sources:
     assert [(skill["scope"], skill["name"]) for skill in payload["missing"]] == [
         ("project", "local-alpha"),
     ]
+
+
+def test_diff_all_warns_and_skips_shadowed_user_skill(tmp_path, capsys, monkeypatch) -> None:
+    write_shadowed_scope(tmp_path, monkeypatch)
+
+    async def fake_installed_skills(options, runner):
+        return ()
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "diff", "-a"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [(skill["scope"], skill["source"], skill["name"]) for skill in payload["missing"]] == [
+        ("project", "project/skills", "wrangler"),
+    ]
+    assert_shadow_warning(payload)
+
+    assert main(["diff", "-a"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out.splitlines() == ["+ ★ wrangler project/skills"]
+    error = " ".join(plain(captured.err).split())
+    assert 'user/global skill "wrangler" is shadowed' in error
+    assert "project scope is effective and user/global scope was skipped" in error
+
+
+def test_list_all_warns_and_skips_shadowed_user_skill(tmp_path, capsys, monkeypatch) -> None:
+    _, _, project_target, user_target = write_shadowed_scope(tmp_path, monkeypatch)
+
+    async def fake_installed_skills(options, runner):
+        if options.directory == project_target:
+            return (InstalledSkill(name="wrangler", path=project_target / "wrangler"),)
+        if options.directory == user_target:
+            return (InstalledSkill(name="wrangler", path=user_target / "wrangler"),)
+        raise AssertionError(f"unexpected skill directory: {options.directory}")
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "list", "-a"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [(skill["scope"], skill["label"], skill["status"]) for skill in payload["skills"]] == [
+        ("project", "project/skills@wrangler", "installed"),
+    ]
+    assert_shadow_warning(payload)
+
+
+def test_list_all_skips_shadowed_dynamic_user_source(tmp_path, capsys, monkeypatch) -> None:
+    home, _, project_target, user_target = write_shadowed_scope(tmp_path, monkeypatch)
+    (home / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  cloudflare/skills:
+""".strip()
+    )
+
+    async def fake_installed_skills(options, runner):
+        if options.directory == project_target:
+            return (InstalledSkill(name="wrangler", path=project_target / "wrangler"),)
+        if options.directory == user_target:
+            return (
+                InstalledSkill(
+                    name="wrangler",
+                    path=user_target / "wrangler",
+                    source_url="https://github.com/cloudflare/skills",
+                ),
+            )
+        raise AssertionError(f"unexpected skill directory: {options.directory}")
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "list", "-a"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [(skill["scope"], skill["label"], skill["status"]) for skill in payload["skills"]] == [
+        ("project", "project/skills@wrangler", "installed"),
+    ]
+    assert_shadow_warning(payload)
 
 
 def test_list_deduplicates_project_and_user_scope_at_home(tmp_path, capsys, monkeypatch) -> None:
@@ -1980,6 +2116,75 @@ sources:
     assert [(step["label"], step["scope"]) for step in payload["steps"]] == [
         ("project/skills@local-alpha", "project"),
         ("user/skills@user-beta", "user"),
+    ]
+
+
+def test_update_all_warns_and_skips_shadowed_user_skill(tmp_path, capsys, monkeypatch) -> None:
+    _, _, project_target, user_target = write_shadowed_scope(tmp_path, monkeypatch)
+
+    async def fake_installed_skills(options, runner):
+        del runner
+        if options.directory == project_target:
+            return (InstalledSkill(name="wrangler", path=project_target / "wrangler"),)
+        if options.directory == user_target:
+            return (InstalledSkill(name="wrangler", path=user_target / "wrangler"),)
+        raise AssertionError(f"unexpected skill directory: {options.directory}")
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "update", "-a", "--dry-run"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [(step["scope"], step["label"]) for step in payload["steps"]] == [
+        ("project", "project/skills@wrangler"),
+    ]
+    assert_shadow_warning(payload)
+
+
+def test_update_all_project_selector_requires_effective_skill_installed(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    _, _, project_target, user_target = write_shadowed_scope(tmp_path, monkeypatch)
+
+    async def fake_installed_skills(options, runner):
+        del runner
+        if options.directory == project_target:
+            return ()
+        if options.directory == user_target:
+            return (InstalledSkill(name="wrangler", path=user_target / "wrangler"),)
+        raise AssertionError(f"unexpected skill directory: {options.directory}")
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["update", "-a", "project/skills", "wrangler", "--dry-run"]) == 2
+    assert "selected skill is not installed: project/skills@wrangler" in capsys.readouterr().err
+
+
+def test_update_all_user_selector_skips_shadowed_skill_but_user_scope_can_force_it(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    _, _, project_target, user_target = write_shadowed_scope(tmp_path, monkeypatch)
+
+    async def fake_installed_skills(options, runner):
+        del runner
+        if options.directory == project_target:
+            return (InstalledSkill(name="wrangler", path=project_target / "wrangler"),)
+        if options.directory == user_target:
+            return (InstalledSkill(name="wrangler", path=user_target / "wrangler"),)
+        raise AssertionError(f"unexpected skill directory: {options.directory}")
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "update", "-a", "cloudflare/skills", "wrangler", "--dry-run"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["steps"] == []
+    assert_shadow_warning(payload)
+
+    assert main(["--json", "-g", "update", "cloudflare/skills", "wrangler", "--dry-run"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert "warnings" not in payload
+    assert [(step["scope"], step["label"]) for step in payload["steps"]] == [
+        ("user", "cloudflare/skills@wrangler"),
     ]
 
 

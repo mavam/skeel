@@ -43,6 +43,243 @@ class AmbiguousRemoveTarget(Exception):
         )
 
 
+@dataclass(frozen=True)
+class SkillShadowWarning:
+    name: str
+    shadowing_scope: str
+    shadowed_scope: str
+    project_label: str
+    user_label: str
+
+    @property
+    def message(self) -> str:
+        shadowed = shadow_scope_label(self.shadowed_scope)
+        shadowing = shadow_scope_label(self.shadowing_scope)
+        return (
+            f'warning: {shadowed} skill "{self.name}" is shadowed by '
+            f'{shadowing} skill "{self.project_label}"; '
+            f"{shadowing} scope is effective and {shadowed} scope was skipped"
+        )
+
+    def json(self) -> dict[str, object]:
+        return {
+            "type": "shadowed-skill",
+            "name": self.name,
+            "shadowing_scope": self.shadowing_scope,
+            "shadowed_scope": self.shadowed_scope,
+            "project_label": self.project_label,
+            "user_label": self.user_label,
+            "message": self.message,
+        }
+
+
+@dataclass(frozen=True)
+class SkillShadowIndex:
+    labels_by_alias: dict[str, str]
+    names_by_alias: dict[str, str]
+
+    @property
+    def has_entries(self) -> bool:
+        return bool(self.labels_by_alias)
+
+    def add(self, aliases: Sequence[str], *, label: str, name: str) -> None:
+        for alias in aliases:
+            self.labels_by_alias.setdefault(alias, label)
+            self.names_by_alias.setdefault(alias, name)
+
+    def match(self, aliases: Sequence[str]) -> tuple[str, str] | None:
+        for alias in aliases:
+            if label := self.labels_by_alias.get(alias):
+                return self.names_by_alias[alias], label
+        return None
+
+
+def shadow_scope_label(scope: str) -> str:
+    return "user/global" if scope == "user" else scope
+
+
+def build_skill_shadow_index(
+    manifest: Manifest | None,
+    installed: Sequence[InstalledSkill],
+) -> SkillShadowIndex:
+    index = SkillShadowIndex(labels_by_alias={}, names_by_alias={})
+    if manifest is not None:
+        for desired in manifest.desired_skills:
+            index.add(
+                desired_skill_shadow_aliases(desired),
+                label=desired_label(desired),
+                name=desired.name,
+            )
+    for installed_skill in installed:
+        index.add(
+            installed_skill_shadow_aliases(installed_skill),
+            label=installed_skill.label,
+            name=installed_skill.basename,
+        )
+    return index
+
+
+def filter_shadowed_manifest(
+    manifest: Manifest,
+    shadow_index: SkillShadowIndex,
+    *,
+    shadowing_scope: str = "project",
+    shadowed_scope: str = "user",
+) -> tuple[Manifest, tuple[SkillShadowWarning, ...]]:
+    if not shadow_index.has_entries:
+        return manifest, ()
+
+    sources: list[SourceSpec] = []
+    warnings: list[SkillShadowWarning] = []
+    for source in manifest.sources:
+        if source.install_all:
+            sources.append(source)
+            continue
+
+        skills: list[SkillSpec] = []
+        for skill in source.skills:
+            desired = DesiredSkill(name=skill.name, spec=skill.spec, source=source.source)
+            if warning := shadow_warning_for_desired_skill(
+                desired,
+                shadow_index,
+                shadowing_scope=shadowing_scope,
+                shadowed_scope=shadowed_scope,
+            ):
+                warnings.append(warning)
+                continue
+            skills.append(skill)
+
+        if skills:
+            sources.append(
+                SourceSpec(
+                    source=source.source,
+                    skills=tuple(skills),
+                    pin=source.pin,
+                    install=source.install,
+                )
+            )
+
+    return (
+        Manifest(path=manifest.path, sources=tuple(sources)),
+        unique_shadow_warnings(warnings),
+    )
+
+
+def filter_shadowed_installed(
+    installed: Sequence[InstalledSkill],
+    shadow_index: SkillShadowIndex,
+    *,
+    shadowing_scope: str = "project",
+    shadowed_scope: str = "user",
+) -> tuple[tuple[InstalledSkill, ...], tuple[SkillShadowWarning, ...]]:
+    if not shadow_index.has_entries:
+        return tuple(installed), ()
+
+    kept: list[InstalledSkill] = []
+    warnings: list[SkillShadowWarning] = []
+    for skill in installed:
+        if warning := shadow_warning_for_installed_skill(
+            skill,
+            shadow_index,
+            shadowing_scope=shadowing_scope,
+            shadowed_scope=shadowed_scope,
+        ):
+            warnings.append(warning)
+            continue
+        kept.append(skill)
+    return tuple(kept), unique_shadow_warnings(warnings)
+
+
+def filter_shadowed_dynamic_sources(
+    manifest: Manifest,
+    original_installed: Sequence[InstalledSkill],
+    filtered_installed: Sequence[InstalledSkill],
+) -> Manifest:
+    sources: list[SourceSpec] = []
+    for source in manifest.sources:
+        if not source.install_all:
+            sources.append(source)
+            continue
+        if matching_dynamic_source_skills(
+            source,
+            original_installed,
+        ) and not matching_dynamic_source_skills(source, filtered_installed):
+            continue
+        sources.append(source)
+    return Manifest(path=manifest.path, sources=tuple(sources))
+
+
+def shadow_warning_for_desired_skill(
+    skill: DesiredSkill,
+    shadow_index: SkillShadowIndex,
+    *,
+    shadowing_scope: str,
+    shadowed_scope: str,
+) -> SkillShadowWarning | None:
+    if match := shadow_index.match(desired_skill_shadow_aliases(skill)):
+        name, project_label = match
+        return SkillShadowWarning(
+            name=name,
+            shadowing_scope=shadowing_scope,
+            shadowed_scope=shadowed_scope,
+            project_label=project_label,
+            user_label=desired_label(skill),
+        )
+    return None
+
+
+def shadow_warning_for_installed_skill(
+    skill: InstalledSkill,
+    shadow_index: SkillShadowIndex,
+    *,
+    shadowing_scope: str,
+    shadowed_scope: str,
+) -> SkillShadowWarning | None:
+    if match := shadow_index.match(installed_skill_shadow_aliases(skill)):
+        name, project_label = match
+        return SkillShadowWarning(
+            name=name,
+            shadowing_scope=shadowing_scope,
+            shadowed_scope=shadowed_scope,
+            project_label=project_label,
+            user_label=skill.label,
+        )
+    return None
+
+
+def unique_shadow_warnings(
+    warnings: Sequence[SkillShadowWarning],
+) -> tuple[SkillShadowWarning, ...]:
+    unique: list[SkillShadowWarning] = []
+    seen: set[tuple[str, str, str]] = set()
+    for warning in warnings:
+        key = (warning.shadowed_scope, warning.name, warning.project_label)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(warning)
+    return tuple(unique)
+
+
+def desired_skill_shadow_aliases(skill: DesiredSkill) -> tuple[str, ...]:
+    return shadow_aliases(skill.name, Path(skill.name).name, Path(skill.spec).name)
+
+
+def installed_skill_shadow_aliases(skill: InstalledSkill) -> tuple[str, ...]:
+    return shadow_aliases(skill.name, skill.basename, skill.path.name)
+
+
+def shadow_aliases(*values: str) -> tuple[str, ...]:
+    aliases: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        if not value or value == "*" or value in seen:
+            continue
+        seen.add(value)
+        aliases.append(value)
+    return tuple(aliases)
+
+
 def resolve_remove_target(
     manifest: Manifest,
     skill: str | None,
