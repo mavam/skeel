@@ -2141,6 +2141,25 @@ def test_update_all_warns_and_skips_shadowed_user_skill(tmp_path, capsys, monkey
     assert_shadow_warning(payload)
 
 
+def test_update_all_project_selector_requires_effective_skill_installed(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    _, _, project_target, user_target = write_shadowed_scope(tmp_path, monkeypatch)
+
+    async def fake_installed_skills(options, runner):
+        del runner
+        if options.directory == project_target:
+            return ()
+        if options.directory == user_target:
+            return (InstalledSkill(name="wrangler", path=user_target / "wrangler"),)
+        raise AssertionError(f"unexpected skill directory: {options.directory}")
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["update", "-a", "project/skills", "wrangler", "--dry-run"]) == 2
+    assert "selected skill is not installed: project/skills@wrangler" in capsys.readouterr().err
+
+
 def test_update_all_user_selector_skips_shadowed_skill_but_user_scope_can_force_it(
     tmp_path, capsys, monkeypatch
 ) -> None:

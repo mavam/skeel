@@ -1131,13 +1131,16 @@ async def command_update(command: UpdateOptions) -> int:
     shadowed = shadow_user_inventories(await manifest_scope_inventories(command, selection))
     steps: list[SkillStep] = []
     run_runtime: Runtime | None = None
+    selector_matches_effective_manifest = False
     for inventory in shadowed.inventories:
         if inventory.manifest is None:
             continue
         if run_runtime is None:
             run_runtime = inventory.runtime
-        if selector is not None and not selector_matches_manifest(inventory.manifest, selector):
-            continue
+        if selector is not None:
+            if not selector_matches_manifest(inventory.manifest, selector):
+                continue
+            selector_matches_effective_manifest = True
         manifest = filter_manifest(inventory.manifest, selector)
         installed = update_installed_skills(
             inventory.manifest,
@@ -1156,7 +1159,7 @@ async def command_update(command: UpdateOptions) -> int:
         )
 
     if selector is not None and not steps:
-        if shadowed.warnings:
+        if not selector_matches_effective_manifest and shadowed.warnings:
             if command.json:
                 terminal.json(
                     run_json(
