@@ -9,6 +9,7 @@ from skeel.io import (
     ProcessResult,
     ProcessRunner,
     StepOutcome,
+    StepResult,
     Terminal,
     run_steps,
 )
@@ -1552,6 +1553,82 @@ sources:
     assert [step["label"] for step in payload["steps"]] == [
         "tenzir/skills@tenzir-docs",
         "cloudflare/skills@wrangler",
+    ]
+
+
+def test_update_schedules_project_and_user_scopes_together(tmp_path, capsys, monkeypatch) -> None:
+    project = tmp_path / "project"
+    home = tmp_path / "home"
+    project_target = project / ".agents" / "skills"
+    user_target = home / ".agents" / "skills"
+    project_target.mkdir(parents=True)
+    user_target.mkdir(parents=True)
+    (project / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  project/skills:
+    - local-alpha
+""".strip()
+    )
+    (home / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  user/skills:
+    - user-beta
+""".strip()
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    async def fake_installed_skills(options, runner):
+        del runner
+        if options.directory == project_target:
+            return (InstalledSkill(name="local-alpha", path=project_target / "local-alpha"),)
+        if options.directory == user_target:
+            return (InstalledSkill(name="user-beta", path=user_target / "user-beta"),)
+        raise AssertionError(f"unexpected skill directory: {options.directory}")
+
+    calls = []
+
+    async def fake_run_steps(steps, runtime, **kwargs):
+        calls.append((tuple(steps), runtime, kwargs))
+        return (
+            [
+                StepResult(
+                    label=step.label,
+                    command=step.command,
+                    returncode=0,
+                    status="current",
+                    scope=step.scope,
+                )
+                for step in steps
+            ],
+            0,
+        )
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+    monkeypatch.setattr("skeel.cli.run_steps", fake_run_steps)
+
+    assert main(["--json", "update"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert len(calls) == 1
+    steps, runtime, kwargs = calls[0]
+    assert runtime.options.directory == project_target
+    assert kwargs == {
+        "dry_run": False,
+        "dry_run_action": "would update",
+        "keep_going": True,
+        "render": False,
+        "remove_current_progress_tasks": True,
+    }
+    assert [(step.label, step.scope) for step in steps] == [
+        ("project/skills@local-alpha", "project"),
+        ("user/skills@user-beta", "user"),
+    ]
+    assert [(step["label"], step["scope"]) for step in payload["steps"]] == [
+        ("project/skills@local-alpha", "project"),
+        ("user/skills@user-beta", "user"),
     ]
 
 
