@@ -1,9 +1,12 @@
 import asyncio
 import json
+import sys
 from pathlib import Path
 
+import pytest
+
 from skeel import __version__
-from skeel.cli import Runtime, diff_skills, main
+from skeel.cli import Runtime, configure_interrupt_handling, diff_skills, main
 from skeel.gh import GhOptions, InstalledSkill, SkillStep, read_skill_provenance
 from skeel.io import (
     ProcessResult,
@@ -115,6 +118,30 @@ def test_version_flag_prints_version(capsys) -> None:
     assert main(["--version"]) == 0
 
     assert capsys.readouterr().out.strip() == __version__
+
+
+def test_interrupt_handling_suppresses_unraisable_keyboard_interrupt(monkeypatch) -> None:
+    forwarded: list[object] = []
+
+    def original_hook(unraisable: object) -> None:
+        forwarded.append(unraisable)
+
+    class Unraisable:
+        def __init__(self, exc_type: type[BaseException]) -> None:
+            self.exc_type = exc_type
+
+    monkeypatch.setattr(sys, "unraisablehook", original_hook)
+
+    configure_interrupt_handling()
+    hook = sys.unraisablehook
+
+    hook(Unraisable(KeyboardInterrupt))
+    runtime_error = Unraisable(RuntimeError)
+    hook(runtime_error)
+    configure_interrupt_handling()
+
+    assert forwarded == [runtime_error]
+    assert sys.unraisablehook is hook
 
 
 def test_apply_without_default_manifest_is_noop(tmp_path, capsys, monkeypatch) -> None:
@@ -1049,6 +1076,45 @@ def test_run_steps_carries_step_scope_into_results(tmp_path: Path) -> None:
     assert [result.scope for result in results] == ["user", "user"]
     # The scope survives JSON serialization too.
     assert all(result.json()["scope"] == "user" for result in results)
+
+
+def test_process_runner_terminates_cancelled_subprocess(tmp_path: Path) -> None:
+    ready = tmp_path / "ready"
+    terminated = tmp_path / "terminated"
+    child = "\n".join(
+        [
+            "import pathlib",
+            "import signal",
+            "import sys",
+            "import time",
+            f"ready = pathlib.Path({str(ready)!r})",
+            f"terminated = pathlib.Path({str(terminated)!r})",
+            "def stop(signum, frame):",
+            "    terminated.write_text('terminated')",
+            "    sys.exit(0)",
+            "signal.signal(signal.SIGTERM, stop)",
+            "ready.write_text('ready')",
+            "while True:",
+            "    time.sleep(0.1)",
+        ]
+    )
+
+    async def run_cancelled_process() -> None:
+        runner = ProcessRunner()
+        task = asyncio.create_task(runner.run([sys.executable, "-c", child], capture_output=True))
+        for _ in range(100):
+            if ready.exists():
+                break
+            await asyncio.sleep(0.01)
+        assert ready.exists()
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run_cancelled_process())
+
+    assert terminated.read_text() == "terminated"
 
 
 def test_run_steps_executes_parallel_commands_concurrently(tmp_path: Path) -> None:

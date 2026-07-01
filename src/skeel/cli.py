@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, override
+from typing import Any, Protocol, override
 
 from clypi import ClypiConfig, ClypiFormatter, Command, Positional, arg, configure
 
@@ -1026,8 +1026,25 @@ def configure_clypi() -> None:
     )
 
 
+def configure_interrupt_handling() -> None:
+    current_hook = sys.unraisablehook
+    if getattr(current_hook, "_skeel_interrupt_hook", False):
+        return
+
+    original_hook: Callable[[Any], Any] = current_hook
+
+    def unraisable_hook(unraisable: object) -> None:
+        if getattr(unraisable, "exc_type", None) is KeyboardInterrupt:
+            return
+        original_hook(unraisable)
+
+    unraisable_hook._skeel_interrupt_hook = True  # type: ignore[attr-defined]
+    sys.unraisablehook = unraisable_hook
+
+
 def main(argv: list[str] | None = None) -> int:
     configure_clypi()
+    configure_interrupt_handling()
     try:
         args = sys.argv[1:] if argv is None else argv
         if len(args) == 0:

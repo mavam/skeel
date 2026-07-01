@@ -250,13 +250,37 @@ class ProcessRunner:
             stderr=stderr,
         )
 
-        stdout_bytes, stderr_bytes = await process.communicate()
+        try:
+            stdout_bytes, stderr_bytes = await process.communicate()
+        except asyncio.CancelledError:
+            await terminate_process(process)
+            raise
         return ProcessResult(
             command=command,
             returncode=process.returncode or 0,
             stdout=(stdout_bytes or b"").decode(errors="replace"),
             stderr=(stderr_bytes or b"").decode(errors="replace"),
         )
+
+
+async def terminate_process(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is not None:
+        return
+
+    try:
+        process.terminate()
+    except ProcessLookupError:
+        return
+
+    try:
+        await asyncio.wait_for(process.wait(), timeout=2)
+    except TimeoutError:
+        if process.returncode is None:
+            try:
+                process.kill()
+            except ProcessLookupError:
+                return
+        await process.wait()
 
 
 class Terminal:
