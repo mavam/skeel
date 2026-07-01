@@ -8,7 +8,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, override
 
-from clypi import ClypiConfig, ClypiFormatter, Command, Positional, arg, configure
+from clypi import (
+    ClypiConfig,
+    ClypiFormatter,
+    Command,
+    Positional,
+    arg,
+    configure,
+    get_config,
+    indented,
+    stack,
+)
 
 from . import __version__
 from .gh import (
@@ -136,11 +146,11 @@ def verbose_arg(*, inherited: bool = False) -> bool:
 
 
 def examples(*items: tuple[str, str]) -> str:
-    lines = ["Examples:"]
-    for command, description in items:
-        lines.append(f"  {command}")
-        lines.append(f"      {description}")
-    return "\n".join(lines)
+    theme = get_config().theme
+    commands = indented([theme.usage_command(command) for command, _ in items])
+    descriptions = [description for _, description in items]
+    title = theme.section_title("Examples")
+    return f"{title}\n{stack(commands, descriptions)}"
 
 
 class CommonOptions(Protocol):

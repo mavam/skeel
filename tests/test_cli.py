@@ -142,7 +142,7 @@ def test_help_lists_scope_shortcuts(capsys) -> None:
         (
             [],
             [
-                "Examples:",
+                "Examples",
                 "skeel add owner/repo skill-name",
                 "skeel apply --dry-run",
                 "skeel update",
@@ -152,7 +152,7 @@ def test_help_lists_scope_shortcuts(capsys) -> None:
         (
             ["path", "--help"],
             [
-                "Examples:",
+                "Examples",
                 "skeel path",
                 "skeel -g path",
                 "skeel path -a --json",
@@ -161,7 +161,7 @@ def test_help_lists_scope_shortcuts(capsys) -> None:
         (
             ["diff", "--help"],
             [
-                "Examples:",
+                "Examples",
                 "skeel diff",
                 "skeel diff -a",
                 "skeel --manifest ./skills.yaml diff",
@@ -171,7 +171,7 @@ def test_help_lists_scope_shortcuts(capsys) -> None:
         (
             ["list", "--help"],
             [
-                "Examples:",
+                "Examples",
                 "skeel list",
                 "skeel list -a",
                 "skeel -g list",
@@ -181,7 +181,7 @@ def test_help_lists_scope_shortcuts(capsys) -> None:
         (
             ["apply", "--help"],
             [
-                "Examples:",
+                "Examples",
                 "skeel apply --dry-run",
                 "skeel apply owner/repo",
                 "skeel apply owner/repo skill-name",
@@ -191,7 +191,7 @@ def test_help_lists_scope_shortcuts(capsys) -> None:
         (
             ["add", "--help"],
             [
-                "Examples:",
+                "Examples",
                 "skeel add owner/repo skill-name",
                 "skeel add owner/repo skill-name@main",
                 "skeel add owner/repo",
@@ -201,7 +201,7 @@ def test_help_lists_scope_shortcuts(capsys) -> None:
         (
             ["remove", "--help"],
             [
-                "Examples:",
+                "Examples",
                 "skeel remove skill-name",
                 "skeel remove skill-name --source owner/repo",
                 "skeel remove --source owner/repo",
@@ -211,7 +211,7 @@ def test_help_lists_scope_shortcuts(capsys) -> None:
         (
             ["update", "--help"],
             [
-                "Examples:",
+                "Examples",
                 "skeel update",
                 "skeel update owner/repo",
                 "skeel update owner/repo skill-name",
