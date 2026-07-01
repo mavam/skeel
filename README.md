@@ -7,8 +7,8 @@ Declarative agent skill management.
 ## ✨ Features
 
 - **Desired state**: declare skill sources in one YAML file
-- **Inventory, dry run, and diff**: list project and user skill inventory,
-  preview commands, and compare managed skills against what's installed locally
+- **Inventory, dry run, and diff**: list selected skill inventory, preview
+  commands, and compare managed skills against what's installed locally
 - **Add, apply, and update**: edit desired state, reconcile installed skills
   with live progress, and update declared installed skills
 - **Target flags**: choose local or global scope from the CLI
@@ -44,12 +44,13 @@ An empty value installs all skills from a source. A list is the common form for
 selected skills. Use a nested mapping only for source options, such as `pin` or
 custom `install` commands.
 
-By default, `skeel` installs `gh skill` skills into `.agents/skills` in the
-current working directory. Use `--scope user` for global installs into
+By default, `skeel` uses project scope: `.agents/skills.yaml` and
+`.agents/skills` in the current working directory. Use `-g` or `--scope user`
+for global installs into
 `~/.agents/skills`:
 
 ```sh
-uvx skeel --scope user apply
+uvx skeel -g apply
 ```
 
 Use `--manifest` (`-m`) for a non-default desired-state manifest:
@@ -60,17 +61,17 @@ uvx skeel --manifest ./skills.yaml apply --dry-run
 
 Scope selects the base directory for the implicit manifest and managed skill
 directory: project scope uses the current working directory and user scope uses
-`$HOME`. If the implicit manifest does not exist, `apply`, `diff`, `list`, and
-`update` are no-ops; `add` creates the manifest. Use `--manifest` or
-`SKEEL_MANIFEST` to use a manifest from another path.
+`$HOME`. Use `-a` or `--all` with commands that can operate on both scopes. If
+the implicit manifest does not exist, `apply`, `diff`, `list`, and `update` are
+no-ops; `add` creates the manifest. Use `--manifest` or `SKEEL_MANIFEST` to use
+a manifest from another path.
 
 ## ✨ Commands
 
-By default, `list`, `diff`, `apply`, and `update` read both
-`.agents/skills.yaml` in the current working directory and
-`~/.agents/skills.yaml`. `list` also reads the corresponding project and user
-skill directories so installed skills are visible even when they are not in a
-manifest. Use `--scope project` or `--scope user` to operate on one scope.
+By default, every command operates on project scope. Use `-g`, `--user`,
+`--global`, or `--scope user` to operate on user scope. Use `-a` or `--all` to
+operate on both project and user scopes for `diff`, `list`, `apply`, `remove`,
+and `update`.
 
 Human output is consistent across commands: the first column is the action
 marker, the second column is a muted scope glyph (`★` for project, `⌂` for
@@ -82,15 +83,14 @@ or `update` to emit one machine-readable object on stdout.
 
 ### `list`
 
-Show project and user installed skills together with manifest status. Missing
-manifest skills are marked with `✘`; installed skills that are not declared in
-the manifest still appear in the inventory and include `"managed": false` in
-JSON output. Project and user skills share one list, each row tagged with its
-scope glyph. Sources declared without a skill list expand to the installed
-skills from that source instead of showing `*`.
+Show installed skills together with manifest status. Missing manifest skills
+are marked with `✘`; installed skills that are not declared in the manifest
+still appear in the inventory and include `"managed": false` in JSON output.
+Rows are tagged with their scope glyph. Sources declared without a skill list
+expand to the installed skills from that source instead of showing `*`.
 
 ```sh
-uvx skeel list
+uvx skeel list -a
 ```
 
 ```text
@@ -156,6 +156,7 @@ that does not match the manifest exits with an error.
 uvx skeel update
 uvx skeel update tenzir/skills
 uvx skeel update tenzir/skills tenzir-docs
+uvx skeel update -a
 ```
 
 ```text
@@ -193,8 +194,9 @@ uvx skeel add mavam/quarto-brief --dry-run
 
 ### `remove`
 
-Remove an unambiguous skill name from the manifest. Pass `--apply` to reconcile
-immediately. A selector that does not match the manifest exits with an error.
+Remove an unambiguous skill name from the selected manifest. Pass `--apply` to
+reconcile immediately. A selector that does not match the manifest exits with an
+error.
 
 `add` and `remove` are intentionally asymmetric: adding starts from a source
 because skeel needs to know where to install from, while removing starts from a
@@ -234,7 +236,18 @@ uvx skeel path
 ```
 
 ```text
-/Users/alice/project/.agents/skills.yaml
+.agents/skills.yaml
+```
+
+Use `-a` to print both implicit paths:
+
+```sh
+uvx skeel path -a
+```
+
+```text
+project .agents/skills.yaml
+user    /Users/alice/.agents/skills.yaml
 ```
 
 ## 🧰 GitHub Skill Policy
