@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, override
+from typing import Any, Protocol, override
 
 from clypi import ClypiConfig, ClypiFormatter, Command, Positional, arg, configure
 
@@ -804,8 +804,7 @@ async def command_update(command: UpdateOptions) -> int:
         terminal.error(no_manifest_entry_message(selector))
         return 2
 
-    results: list[StepResult] = []
-    exit_code = 0
+    steps: list[SkillStep] = []
     for context in selection.contexts:
         if selector is not None and not selector_matches_manifest(context.manifest, selector):
             continue
@@ -815,30 +814,30 @@ async def command_update(command: UpdateOptions) -> int:
             await installed_skills(context.runtime.options, context.runtime.runner),
             selector,
         )
-        steps = scoped_steps(
-            update_steps(
-                installed,
-                context.runtime.options,
-                manifest=manifest,
-            ),
-            context.scope,
+        steps.extend(
+            scoped_steps(
+                update_steps(
+                    installed,
+                    context.runtime.options,
+                    manifest=manifest,
+                ),
+                context.scope,
+            )
         )
-        scope_results, scope_exit_code = await run_steps(
-            steps,
-            context.runtime,
-            dry_run=command.dry_run,
-            dry_run_action="would update",
-            keep_going=True,
-            render=False,
-            remove_current_progress_tasks=not command.verbose,
-        )
-        results.extend(scope_results)
-        if scope_exit_code and not exit_code:
-            exit_code = scope_exit_code
 
-    if selector is not None and not results:
+    if selector is not None and not steps:
         terminal.error(selected_skill_not_installed_message(selector))
         return 2
+
+    results, exit_code = await run_steps(
+        steps,
+        selection.contexts[0].runtime,
+        dry_run=command.dry_run,
+        dry_run_action="would update",
+        keep_going=True,
+        render=False,
+        remove_current_progress_tasks=not command.verbose,
+    )
 
     if command.json:
         terminal.json(run_json(dry_run=command.dry_run, steps=results))
@@ -1027,8 +1026,25 @@ def configure_clypi() -> None:
     )
 
 
+def configure_interrupt_handling() -> None:
+    current_hook = sys.unraisablehook
+    if getattr(current_hook, "_skeel_interrupt_hook", False):
+        return
+
+    original_hook: Callable[[Any], Any] = current_hook
+
+    def unraisable_hook(unraisable: object) -> None:
+        if getattr(unraisable, "exc_type", None) is KeyboardInterrupt:
+            return
+        original_hook(unraisable)
+
+    unraisable_hook._skeel_interrupt_hook = True  # type: ignore[attr-defined]
+    sys.unraisablehook = unraisable_hook
+
+
 def main(argv: list[str] | None = None) -> int:
     configure_clypi()
+    configure_interrupt_handling()
     try:
         args = sys.argv[1:] if argv is None else argv
         if len(args) == 0:

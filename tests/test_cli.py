@@ -1,14 +1,18 @@
 import asyncio
 import json
+import sys
 from pathlib import Path
 
+import pytest
+
 from skeel import __version__
-from skeel.cli import Runtime, diff_skills, main
+from skeel.cli import Runtime, configure_interrupt_handling, diff_skills, main
 from skeel.gh import GhOptions, InstalledSkill, SkillStep, read_skill_provenance
 from skeel.io import (
     ProcessResult,
     ProcessRunner,
     StepOutcome,
+    StepResult,
     Terminal,
     run_steps,
 )
@@ -114,6 +118,30 @@ def test_version_flag_prints_version(capsys) -> None:
     assert main(["--version"]) == 0
 
     assert capsys.readouterr().out.strip() == __version__
+
+
+def test_interrupt_handling_suppresses_unraisable_keyboard_interrupt(monkeypatch) -> None:
+    forwarded: list[object] = []
+
+    def original_hook(unraisable: object) -> None:
+        forwarded.append(unraisable)
+
+    class Unraisable:
+        def __init__(self, exc_type: type[BaseException]) -> None:
+            self.exc_type = exc_type
+
+    monkeypatch.setattr(sys, "unraisablehook", original_hook)
+
+    configure_interrupt_handling()
+    hook = sys.unraisablehook
+
+    hook(Unraisable(KeyboardInterrupt))
+    runtime_error = Unraisable(RuntimeError)
+    hook(runtime_error)
+    configure_interrupt_handling()
+
+    assert forwarded == [runtime_error]
+    assert sys.unraisablehook is hook
 
 
 def test_apply_without_default_manifest_is_noop(tmp_path, capsys, monkeypatch) -> None:
@@ -1050,6 +1078,45 @@ def test_run_steps_carries_step_scope_into_results(tmp_path: Path) -> None:
     assert all(result.json()["scope"] == "user" for result in results)
 
 
+def test_process_runner_terminates_cancelled_subprocess(tmp_path: Path) -> None:
+    ready = tmp_path / "ready"
+    terminated = tmp_path / "terminated"
+    child = "\n".join(
+        [
+            "import pathlib",
+            "import signal",
+            "import sys",
+            "import time",
+            f"ready = pathlib.Path({str(ready)!r})",
+            f"terminated = pathlib.Path({str(terminated)!r})",
+            "def stop(signum, frame):",
+            "    terminated.write_text('terminated')",
+            "    sys.exit(0)",
+            "signal.signal(signal.SIGTERM, stop)",
+            "ready.write_text('ready')",
+            "while True:",
+            "    time.sleep(0.1)",
+        ]
+    )
+
+    async def run_cancelled_process() -> None:
+        runner = ProcessRunner()
+        task = asyncio.create_task(runner.run([sys.executable, "-c", child], capture_output=True))
+        for _ in range(100):
+            if ready.exists():
+                break
+            await asyncio.sleep(0.01)
+        assert ready.exists()
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run_cancelled_process())
+
+    assert terminated.read_text() == "terminated"
+
+
 def test_run_steps_executes_parallel_commands_concurrently(tmp_path: Path) -> None:
     class Runner:
         def __init__(self) -> None:
@@ -1552,6 +1619,82 @@ sources:
     assert [step["label"] for step in payload["steps"]] == [
         "tenzir/skills@tenzir-docs",
         "cloudflare/skills@wrangler",
+    ]
+
+
+def test_update_schedules_project_and_user_scopes_together(tmp_path, capsys, monkeypatch) -> None:
+    project = tmp_path / "project"
+    home = tmp_path / "home"
+    project_target = project / ".agents" / "skills"
+    user_target = home / ".agents" / "skills"
+    project_target.mkdir(parents=True)
+    user_target.mkdir(parents=True)
+    (project / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  project/skills:
+    - local-alpha
+""".strip()
+    )
+    (home / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  user/skills:
+    - user-beta
+""".strip()
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+
+    async def fake_installed_skills(options, runner):
+        del runner
+        if options.directory == project_target:
+            return (InstalledSkill(name="local-alpha", path=project_target / "local-alpha"),)
+        if options.directory == user_target:
+            return (InstalledSkill(name="user-beta", path=user_target / "user-beta"),)
+        raise AssertionError(f"unexpected skill directory: {options.directory}")
+
+    calls = []
+
+    async def fake_run_steps(steps, runtime, **kwargs):
+        calls.append((tuple(steps), runtime, kwargs))
+        return (
+            [
+                StepResult(
+                    label=step.label,
+                    command=step.command,
+                    returncode=0,
+                    status="current",
+                    scope=step.scope,
+                )
+                for step in steps
+            ],
+            0,
+        )
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+    monkeypatch.setattr("skeel.cli.run_steps", fake_run_steps)
+
+    assert main(["--json", "update"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert len(calls) == 1
+    steps, runtime, kwargs = calls[0]
+    assert runtime.options.directory == project_target
+    assert kwargs == {
+        "dry_run": False,
+        "dry_run_action": "would update",
+        "keep_going": True,
+        "render": False,
+        "remove_current_progress_tasks": True,
+    }
+    assert [(step.label, step.scope) for step in steps] == [
+        ("project/skills@local-alpha", "project"),
+        ("user/skills@user-beta", "user"),
+    ]
+    assert [(step["label"], step["scope"]) for step in payload["steps"]] == [
+        ("project/skills@local-alpha", "project"),
+        ("user/skills@user-beta", "user"),
     ]
 
 
