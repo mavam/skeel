@@ -145,7 +145,7 @@ def test_help_lists_scope_shortcuts(capsys) -> None:
                 "Examples:",
                 "skeel add owner/repo skill-name",
                 "skeel apply --dry-run",
-                "skeel update -a",
+                "skeel update",
                 "skeel --manifest ./skills.yaml apply",
             ],
         ),

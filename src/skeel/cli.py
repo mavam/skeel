@@ -1011,7 +1011,7 @@ class Diff(SkeelCommand):
     def epilog(cls) -> str:
         return examples(
             ("skeel diff", "Compare the project manifest with installed project skills"),
-            ("skeel diff -a", "Compare project and user manifests with both skill scopes"),
+            ("skeel diff -a", "Compare both project and user scopes"),
             ("skeel --manifest ./skills.yaml diff", "Compare an explicit manifest"),
             ("skeel diff --json", "Emit missing and extra skills as JSON"),
         )
@@ -1041,8 +1041,8 @@ class ListCommand(SkeelCommand):
     def epilog(cls) -> str:
         return examples(
             ("skeel list", "Show project skills with manifest status"),
-            ("skeel list -a", "Show project and user skill inventory"),
-            ("skeel -g list", "Show user skill inventory"),
+            ("skeel list -a", "Show skills in both project and user scopes"),
+            ("skeel -g list", "Show user-scope skills"),
             ("skeel list --json", "Emit inventory as JSON"),
         )
 
@@ -1074,10 +1074,10 @@ class Apply(SkeelCommand):
     @classmethod
     def epilog(cls) -> str:
         return examples(
+            ("skeel apply", "Reconcile installed project skills with the manifest"),
             ("skeel apply --dry-run", "Preview installs and removals"),
-            ("skeel apply", "Reconcile project skills with the project manifest"),
-            ("skeel apply owner/repo", "Apply one manifest source"),
-            ("skeel apply owner/repo skill-name", "Apply one skill from one source"),
+            ("skeel apply owner/repo", "Reconcile a single manifest source"),
+            ("skeel apply owner/repo skill-name", "Reconcile one skill from one source"),
             ("skeel apply --reinstall", "Reinstall every manifest entry"),
         )
 
@@ -1112,7 +1112,7 @@ class Add(SkeelCommand):
     def epilog(cls) -> str:
         return examples(
             ("skeel add owner/repo skill-name", "Add one skill to the project manifest"),
-            ("skeel add owner/repo skill-name@main", "Add a pinned skill"),
+            ("skeel add owner/repo skill-name@main", "Add a skill pinned to a git ref"),
             ("skeel add owner/repo", "Add all skills from a source"),
             ("skeel add owner/repo skill-name --apply", "Add and reconcile immediately"),
             ("skeel -g add owner/repo skill-name", "Add a skill to the user manifest"),
@@ -1149,10 +1149,10 @@ class Remove(SkeelCommand):
     @classmethod
     def epilog(cls) -> str:
         return examples(
-            ("skeel remove skill-name", "Remove an unambiguous skill from the manifest"),
+            ("skeel remove skill-name", "Remove a skill by name from the manifest"),
             (
                 "skeel remove skill-name --source owner/repo",
-                "Remove a skill when multiple sources declare that name",
+                "Disambiguate when multiple sources declare the name",
             ),
             ("skeel remove --source owner/repo", "Remove a whole source"),
             ("skeel remove skill-name --apply", "Remove and reconcile immediately"),
@@ -1190,7 +1190,7 @@ class Update(SkeelCommand):
             ("skeel update", "Update installed project skills declared by the manifest"),
             ("skeel update owner/repo", "Update installed skills from one source"),
             ("skeel update owner/repo skill-name", "Update one installed skill"),
-            ("skeel update -a", "Update project and user skill scopes"),
+            ("skeel update -a", "Update skills in both project and user scopes"),
             ("skeel update --verbose", "Show current skills as well as changed skills"),
         )
 
@@ -1215,15 +1215,13 @@ class Skeel(Command):
     @classmethod
     def epilog(cls) -> str:
         return examples(
-            ("skeel path", "Find the selected manifest path"),
-            ("skeel add owner/repo skill-name", "Add one skill to desired state"),
-            ("skeel add owner/repo", "Add all skills from a source"),
+            ("skeel add owner/repo skill-name", "Add a skill to the project manifest"),
             ("skeel diff", "Preview manifest drift"),
-            ("skeel apply --dry-run", "Preview reconciliation commands"),
+            ("skeel apply --dry-run", "Preview installs and removals"),
             ("skeel apply", "Install missing skills and remove extras"),
-            ("skeel update -a", "Update project and user skills declared by manifests"),
+            ("skeel update", "Update installed skills declared by the manifest"),
             ("skeel list --json", "Print machine-readable skill inventory"),
-            ("skeel -g apply", "Operate on the user manifest and user skill directory"),
+            ("skeel -g apply", "Manage user-scope skills instead of the project"),
             ("skeel --manifest ./skills.yaml apply", "Use an explicit manifest path"),
         )
 
