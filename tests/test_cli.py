@@ -191,6 +191,63 @@ def test_path_all_scopes_json(tmp_path, capsys, monkeypatch) -> None:
 @pytest.mark.parametrize(
     "args",
     [
+        ["path", "-a"],
+        ["apply", "--dry-run", "-a"],
+        ["remove", "-a", "alpha-skill"],
+    ],
+)
+def test_all_scopes_rejects_cli_manifest(args, tmp_path, capsys, monkeypatch) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  example/skills:
+    - alpha-skill
+""",
+    )
+
+    async def fake_installed_skills(options, runner):
+        raise AssertionError(f"unexpected skill directory: {options.directory}")
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--manifest", str(path), *args]) == 2
+
+    assert "--all cannot be used with an explicit manifest" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["path", "-a"],
+        ["apply", "--dry-run", "-a"],
+        ["remove", "-a", "alpha-skill"],
+    ],
+)
+def test_all_scopes_rejects_env_manifest(args, tmp_path, capsys, monkeypatch) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  example/skills:
+    - alpha-skill
+""",
+    )
+    monkeypatch.setenv("SKEEL_MANIFEST", str(path))
+
+    async def fake_installed_skills(options, runner):
+        raise AssertionError(f"unexpected skill directory: {options.directory}")
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(args) == 2
+
+    assert "--all cannot be used with an explicit manifest" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
         ["--scope", "user", "-g", "path"],
         ["--scope", "user", "--scope", "project", "path"],
         ["-g", "--user", "path"],

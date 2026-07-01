@@ -64,14 +64,15 @@ directory: project scope uses the current working directory and user scope uses
 `$HOME`. Use `-a` or `--all` with commands that can operate on both scopes. If
 the implicit manifest does not exist, `apply`, `diff`, `list`, and `update` are
 no-ops; `add` creates the manifest. Use `--manifest` or `SKEEL_MANIFEST` to use
-a manifest from another path.
+a manifest from another path. Because an explicit manifest path is not scoped,
+`-a` and `--all` are rejected when `--manifest` or `SKEEL_MANIFEST` is set.
 
 ## ✨ Commands
 
 By default, every command operates on project scope. Use `-g`, `--user`,
 `--global`, or `--scope user` to operate on user scope. Use `-a` or `--all` to
 operate on both project and user scopes for `diff`, `list`, `apply`, `remove`,
-and `update`.
+and `update` when using the implicit manifests.
 
 Human output is consistent across commands: the first column is the action
 marker, the second column is a muted scope glyph (`★` for project, `⌂` for

@@ -1192,11 +1192,26 @@ def scope_selectors(args: Sequence[str]) -> list[str]:
     return selectors
 
 
+def has_explicit_manifest_selector(args: Sequence[str]) -> bool:
+    for value in normalize_short_options(args):
+        if value == "--":
+            break
+        if value in {"--manifest", "-m"}:
+            return True
+    return False
+
+
 def validate_scope_selectors(args: Sequence[str]) -> None:
     selectors = scope_selectors(args)
     if len(selectors) > 1:
         formatted = ", ".join(selectors)
         raise ValueError(f"multiple scope selectors are not allowed: {formatted}")
+    if selectors in (["--all"], ["-a"]) and (
+        has_explicit_manifest_selector(args) or os.environ.get("SKEEL_MANIFEST") is not None
+    ):
+        raise ValueError(
+            "--all cannot be used with an explicit manifest; omit --all or select one scope"
+        )
 
 
 def normalize_scope_aliases(args: Sequence[str]) -> list[str]:
