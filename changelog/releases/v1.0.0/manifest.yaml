@@ -1,0 +1,10 @@
+created: 2026-07-01
+title: Project scope as the default
+intro: >-
+  This release makes project-scoped skill management the default, improves scoped
+  updates, and clarifies behavior when project skills shadow global skills. It also
+  adds CLI help examples and cleans up interrupt handling so agents and people get
+  clearer guidance and quieter shutdowns.
+source:
+  mode: sync-stable-queue
+  previous_stable: v0.10.0
