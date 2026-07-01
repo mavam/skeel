@@ -48,13 +48,19 @@ from .reconcile import (
     ListedSkill,
     RemoveTarget,
     SkillDiff,
+    SkillShadowWarning,
     apply_plan,
+    build_skill_shadow_index,
     diff_installed_skills,
     filter_manifest,
+    filter_shadowed_dynamic_sources,
+    filter_shadowed_installed,
+    filter_shadowed_manifest,
     list_installed_skills,
     resolve_remove_target,
     selector_label,
     selector_matches_manifest,
+    unique_shadow_warnings,
     update_installed_skills,
 )
 
@@ -206,6 +212,20 @@ class ListSelection:
     contexts: tuple[ListContext, ...]
 
 
+@dataclass(frozen=True)
+class ScopeInventory:
+    scope: str
+    runtime: Runtime
+    manifest: Manifest | None
+    installed: tuple[InstalledSkill, ...]
+
+
+@dataclass(frozen=True)
+class ShadowedInventories:
+    inventories: tuple[ScopeInventory, ...]
+    warnings: tuple[SkillShadowWarning, ...]
+
+
 SelectionKey = tuple[Path, Path]
 
 
@@ -304,6 +324,117 @@ def select_list_contexts(command: CommonOptions) -> ListSelection:
     return ListSelection(contexts=tuple(contexts.values()))
 
 
+async def manifest_scope_inventories(
+    command: CommonOptions,
+    selection: ManifestSelection,
+) -> tuple[ScopeInventory, ...]:
+    inventories = [
+        ScopeInventory(
+            scope=context.scope,
+            runtime=context.runtime,
+            manifest=context.manifest,
+            installed=await installed_skills(context.runtime.options, context.runtime.runner),
+        )
+        for context in selection.contexts
+    ]
+
+    if (
+        command.all
+        and any(inventory.scope == "user" for inventory in inventories)
+        and not any(inventory.scope == "project" for inventory in inventories)
+    ):
+        project_runtime = build_runtime_for_scope(command, scope="project")
+        project_key = selection_key(project_runtime)
+        if all(selection_key(inventory.runtime) != project_key for inventory in inventories):
+            inventories.insert(
+                0,
+                ScopeInventory(
+                    scope="project",
+                    runtime=project_runtime,
+                    manifest=load_runtime_manifest(project_runtime),
+                    installed=await installed_skills(
+                        project_runtime.options,
+                        project_runtime.runner,
+                    ),
+                ),
+            )
+
+    return tuple(inventories)
+
+
+async def list_scope_inventories(selection: ListSelection) -> tuple[ScopeInventory, ...]:
+    inventories = []
+    for context in selection.contexts:
+        inventories.append(
+            ScopeInventory(
+                scope=context.scope,
+                runtime=context.runtime,
+                manifest=context.manifest,
+                installed=await installed_skills(context.runtime.options, context.runtime.runner),
+            )
+        )
+    return tuple(inventories)
+
+
+def shadow_user_inventories(
+    inventories: Sequence[ScopeInventory],
+) -> ShadowedInventories:
+    project = next(
+        (inventory for inventory in inventories if inventory.scope == "project"),
+        None,
+    )
+    if project is None:
+        return ShadowedInventories(inventories=tuple(inventories), warnings=())
+
+    shadow_index = build_skill_shadow_index(project.manifest, project.installed)
+    if not shadow_index.has_entries:
+        return ShadowedInventories(inventories=tuple(inventories), warnings=())
+
+    filtered: list[ScopeInventory] = []
+    warnings: list[SkillShadowWarning] = []
+    for inventory in inventories:
+        if inventory.scope != "user":
+            filtered.append(inventory)
+            continue
+
+        manifest = inventory.manifest
+        if manifest is not None:
+            manifest, manifest_warnings = filter_shadowed_manifest(
+                manifest,
+                shadow_index,
+                shadowing_scope="project",
+                shadowed_scope=inventory.scope,
+            )
+            warnings.extend(manifest_warnings)
+
+        installed, installed_warnings = filter_shadowed_installed(
+            inventory.installed,
+            shadow_index,
+            shadowing_scope="project",
+            shadowed_scope=inventory.scope,
+        )
+        warnings.extend(installed_warnings)
+        if manifest is not None:
+            manifest = filter_shadowed_dynamic_sources(
+                manifest,
+                inventory.installed,
+                installed,
+            )
+        filtered.append(
+            ScopeInventory(
+                scope=inventory.scope,
+                runtime=inventory.runtime,
+                manifest=manifest,
+                installed=installed,
+            )
+        )
+
+    return ShadowedInventories(
+        inventories=tuple(filtered),
+        warnings=unique_shadow_warnings(warnings),
+    )
+
+
 async def diff_skills(
     manifest: Manifest,
     options: GhOptions,
@@ -315,8 +446,9 @@ async def diff_skills(
 def diff_json(
     missing: Sequence[tuple[DesiredSkill, str]],
     extra: Sequence[tuple[InstalledSkill, str]],
+    warnings: Sequence[SkillShadowWarning] = (),
 ) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "missing": [
             {
                 "name": skill.name,
@@ -336,15 +468,22 @@ def diff_json(
         ],
         "in_sync": not missing and not extra,
     }
+    add_warning_payload(payload, warnings)
+    return payload
 
 
-def list_json(rows: Sequence[ListedSkill]) -> dict[str, object]:
-    return {
+def list_json(
+    rows: Sequence[ListedSkill],
+    warnings: Sequence[SkillShadowWarning] = (),
+) -> dict[str, object]:
+    payload: dict[str, object] = {
         "skills": [row.json() for row in rows],
         "installed": sum(1 for row in rows if row.status == "installed"),
         "missing": sum(1 for row in rows if row.status == "missing"),
         "total": len(rows),
     }
+    add_warning_payload(payload, warnings)
+    return payload
 
 
 def run_json(
@@ -353,15 +492,34 @@ def run_json(
     steps: Sequence[StepResult],
     missing: Sequence[str] = (),
     extra: Sequence[str] = (),
+    warnings: Sequence[SkillShadowWarning] = (),
 ) -> dict[str, object]:
     failed = [step.label for step in failed_steps(steps)]
-    return {
+    payload: dict[str, object] = {
         "dry_run": dry_run,
         "missing": list(missing),
         "extra": list(extra),
         "steps": [step.json() for step in steps],
         "failed": failed,
     }
+    add_warning_payload(payload, warnings)
+    return payload
+
+
+def add_warning_payload(
+    payload: dict[str, object],
+    warnings: Sequence[SkillShadowWarning],
+) -> None:
+    if warnings:
+        payload["warnings"] = [warning.json() for warning in warnings]
+
+
+def render_shadow_warnings(
+    terminal: Terminal,
+    warnings: Sequence[SkillShadowWarning],
+) -> None:
+    for warning in warnings:
+        terminal.warning(warning.message)
 
 
 def add_json(
@@ -452,18 +610,20 @@ async def command_diff(command: CommonOptions) -> int:
                 terminal.no_manifest(path)
         return 0
 
+    shadowed = shadow_user_inventories(await manifest_scope_inventories(command, selection))
     missing: list[tuple[DesiredSkill, str]] = []
     extra: list[tuple[InstalledSkill, str]] = []
-    for context in selection.contexts:
-        current = await diff_skills(
-            context.manifest, context.runtime.options, context.runtime.runner
-        )
-        missing.extend((skill, context.scope) for skill in current.missing)
-        extra.extend((skill, context.scope) for skill in current.extra)
+    for inventory in shadowed.inventories:
+        if inventory.manifest is None:
+            continue
+        current = diff_installed_skills(inventory.manifest, inventory.installed)
+        missing.extend((skill, inventory.scope) for skill in current.missing)
+        extra.extend((skill, inventory.scope) for skill in current.extra)
 
     if command.json:
-        terminal.json(diff_json(missing, extra))
+        terminal.json(diff_json(missing, extra, warnings=shadowed.warnings))
     else:
+        render_shadow_warnings(terminal, shadowed.warnings)
         terminal.diff(
             [(skill.name, skill.source, scope) for skill, scope in missing],
             [(skill.name, skill.source_url or None, scope) for skill, scope in extra],
@@ -475,15 +635,22 @@ async def command_diff(command: CommonOptions) -> int:
 async def command_list(command: CommonOptions) -> int:
     terminal = Terminal(json_output=command.json)
     selection = select_list_contexts(command)
+    shadowed = shadow_user_inventories(await list_scope_inventories(selection))
     rows: list[ListedSkill] = []
-    for context in selection.contexts:
-        installed = await installed_skills(context.runtime.options, context.runtime.runner)
-        rows.extend(list_installed_skills(context.manifest, installed, scope=context.scope))
+    for inventory in shadowed.inventories:
+        rows.extend(
+            list_installed_skills(
+                inventory.manifest,
+                inventory.installed,
+                scope=inventory.scope,
+            )
+        )
 
     if command.json:
-        terminal.json(list_json(rows))
+        terminal.json(list_json(rows, warnings=shadowed.warnings))
         return 0
 
+    render_shadow_warnings(terminal, shadowed.warnings)
     if not rows:
         for context in selection.contexts:
             if context.manifest is None:
@@ -517,21 +684,37 @@ async def command_apply(command: ApplyOptions) -> int:
     if selector is not None and not selection_matches_selector(selection, selector):
         terminal.error(no_manifest_entry_message(selector))
         return 2
-    for context in selection.contexts:
-        if selector is not None and not selector_matches_manifest(context.manifest, selector):
+    shadowed = shadow_user_inventories(await manifest_scope_inventories(command, selection))
+    if not command.json:
+        render_shadow_warnings(terminal, shadowed.warnings)
+    for inventory in shadowed.inventories:
+        if inventory.manifest is None:
             continue
-        steps = await apply_steps(
-            context.manifest,
-            context.runtime,
+        if selector is not None and not selector_matches_manifest(inventory.manifest, selector):
+            continue
+        plan = apply_plan(
+            inventory.manifest,
+            inventory.runtime.options,
+            () if command.reinstall else inventory.installed,
             reinstall=command.reinstall,
             selector=selector,
-            scope=context.scope,
         )
-        context_results, context_exit_code = await run_apply_steps(command, context.runtime, steps)
+        steps = scoped_steps(plan, inventory.scope)
+        context_results, context_exit_code = await run_apply_steps(
+            command,
+            inventory.runtime,
+            steps,
+        )
         results.extend(context_results)
         if context_exit_code and not exit_code:
             exit_code = context_exit_code
-    return finish_apply_results(command, terminal, results, exit_code)
+    return finish_apply_results(
+        command,
+        terminal,
+        results,
+        exit_code,
+        warnings=shadowed.warnings,
+    )
 
 
 async def apply_manifest(
@@ -625,9 +808,11 @@ def finish_apply_results(
     terminal: Terminal,
     results: Sequence[StepResult],
     exit_code: int,
+    *,
+    warnings: Sequence[SkillShadowWarning] = (),
 ) -> int:
     if command.json:
-        terminal.json(run_json(dry_run=command.dry_run, steps=results))
+        terminal.json(run_json(dry_run=command.dry_run, steps=results, warnings=warnings))
     elif exit_code:
         failed = failed_steps(results)
         if failed:
@@ -718,6 +903,8 @@ async def command_remove_all(command: RemoveOptions) -> int:
     removals: list[dict[str, object]] = []
     results: list[StepResult] = []
     exit_code = 0
+    updated_manifests: dict[SelectionKey, Manifest] = {}
+    apply_keys: set[SelectionKey] = set()
     for context, target in matches:
         update = remove_manifest_source(
             context.runtime.manifest_path,
@@ -725,6 +912,9 @@ async def command_remove_all(command: RemoveOptions) -> int:
             target.skill,
             dry_run=command.dry_run,
         )
+        context_key = selection_key(context.runtime)
+        updated_manifests[context_key] = update.manifest
+        apply_keys.add(context_key)
         removals.append(
             {
                 "scope": context.scope,
@@ -744,10 +934,38 @@ async def command_remove_all(command: RemoveOptions) -> int:
                 manifest_path=context.runtime.manifest_path,
                 scope=context.scope,
             )
-        if command.apply:
-            steps = await apply_steps(update.manifest, context.runtime, scope=context.scope)
+
+    warnings: tuple[SkillShadowWarning, ...] = ()
+    if command.apply:
+        inventories = [
+            ScopeInventory(
+                scope=inventory.scope,
+                runtime=inventory.runtime,
+                manifest=updated_manifests.get(
+                    selection_key(inventory.runtime),
+                    inventory.manifest,
+                ),
+                installed=inventory.installed,
+            )
+            for inventory in await manifest_scope_inventories(command, selection)
+        ]
+        shadowed = shadow_user_inventories(inventories)
+        warnings = shadowed.warnings
+        if not command.json:
+            render_shadow_warnings(terminal, warnings)
+        for inventory in shadowed.inventories:
+            if selection_key(inventory.runtime) not in apply_keys or inventory.manifest is None:
+                continue
+            plan = apply_plan(
+                inventory.manifest,
+                inventory.runtime.options,
+                inventory.installed,
+            )
+            steps = scoped_steps(plan, inventory.scope)
             context_results, context_exit_code = await run_apply_steps(
-                command, context.runtime, steps
+                command,
+                inventory.runtime,
+                steps,
             )
             results.extend(context_results)
             if context_exit_code and not exit_code:
@@ -755,7 +973,13 @@ async def command_remove_all(command: RemoveOptions) -> int:
 
     if command.json:
         if command.apply:
-            terminal.json(run_json(dry_run=command.dry_run, steps=results))
+            terminal.json(
+                run_json(
+                    dry_run=command.dry_run,
+                    steps=results,
+                    warnings=warnings,
+                )
+            )
         else:
             terminal.json(remove_all_json(removals, dry_run=command.dry_run))
     elif command.apply and exit_code:
@@ -904,34 +1128,53 @@ async def command_update(command: UpdateOptions) -> int:
         terminal.error(no_manifest_entry_message(selector))
         return 2
 
+    shadowed = shadow_user_inventories(await manifest_scope_inventories(command, selection))
     steps: list[SkillStep] = []
-    for context in selection.contexts:
-        if selector is not None and not selector_matches_manifest(context.manifest, selector):
+    run_runtime: Runtime | None = None
+    for inventory in shadowed.inventories:
+        if inventory.manifest is None:
             continue
-        manifest = filter_manifest(context.manifest, selector)
+        if run_runtime is None:
+            run_runtime = inventory.runtime
+        if selector is not None and not selector_matches_manifest(inventory.manifest, selector):
+            continue
+        manifest = filter_manifest(inventory.manifest, selector)
         installed = update_installed_skills(
-            context.manifest,
-            await installed_skills(context.runtime.options, context.runtime.runner),
+            inventory.manifest,
+            inventory.installed,
             selector,
         )
         steps.extend(
             scoped_steps(
                 update_steps(
                     installed,
-                    context.runtime.options,
+                    inventory.runtime.options,
                     manifest=manifest,
                 ),
-                context.scope,
+                inventory.scope,
             )
         )
 
     if selector is not None and not steps:
+        if shadowed.warnings:
+            if command.json:
+                terminal.json(
+                    run_json(
+                        dry_run=command.dry_run,
+                        steps=[],
+                        warnings=shadowed.warnings,
+                    )
+                )
+            else:
+                render_shadow_warnings(terminal, shadowed.warnings)
+            return 0
         terminal.error(selected_skill_not_installed_message(selector))
         return 2
 
+    assert run_runtime is not None
     results, exit_code = await run_steps(
         steps,
-        selection.contexts[0].runtime,
+        run_runtime,
         dry_run=command.dry_run,
         dry_run_action="would update",
         keep_going=True,
@@ -940,9 +1183,12 @@ async def command_update(command: UpdateOptions) -> int:
     )
 
     if command.json:
-        terminal.json(run_json(dry_run=command.dry_run, steps=results))
+        terminal.json(run_json(dry_run=command.dry_run, steps=results, warnings=shadowed.warnings))
     elif not command.dry_run:
+        render_shadow_warnings(terminal, shadowed.warnings)
         terminal.render_update_summary(results, verbose=command.verbose)
+    else:
+        render_shadow_warnings(terminal, shadowed.warnings)
 
     if not command.json and exit_code:
         failed = failed_steps(results)
