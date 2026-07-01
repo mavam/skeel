@@ -5,6 +5,8 @@ authors:
   - mavam
   - codex
 created: 2026-07-01T19:46:13.714348Z
+prs:
+  - 14
 ---
 
 `skeel --help` and every `skeel <command> --help` page now include focused examples:
