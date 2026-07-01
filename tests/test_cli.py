@@ -177,6 +177,98 @@ def test_help_lists_scope_shortcuts(capsys) -> None:
     assert "-a, --all" in output
 
 
+@pytest.mark.parametrize(
+    ("args", "expected"),
+    [
+        (
+            [],
+            [
+                "Examples",
+                "skeel add owner/repo skill-name",
+                "skeel apply --dry-run",
+                "skeel update",
+                "skeel --manifest ./skills.yaml apply",
+            ],
+        ),
+        (
+            ["path", "--help"],
+            [
+                "Examples",
+                "skeel path",
+                "skeel -g path",
+                "skeel path -a --json",
+            ],
+        ),
+        (
+            ["diff", "--help"],
+            [
+                "Examples",
+                "skeel diff",
+                "skeel diff -a",
+                "skeel --manifest ./skills.yaml diff",
+                "skeel diff --json",
+            ],
+        ),
+        (
+            ["list", "--help"],
+            [
+                "Examples",
+                "skeel list",
+                "skeel list -a",
+                "skeel -g list",
+                "skeel list --json",
+            ],
+        ),
+        (
+            ["apply", "--help"],
+            [
+                "Examples",
+                "skeel apply --dry-run",
+                "skeel apply owner/repo",
+                "skeel apply owner/repo skill-name",
+                "skeel apply --reinstall",
+            ],
+        ),
+        (
+            ["add", "--help"],
+            [
+                "Examples",
+                "skeel add owner/repo skill-name",
+                "skeel add owner/repo skill-name@main",
+                "skeel add owner/repo",
+                "skeel -g add owner/repo skill-name",
+            ],
+        ),
+        (
+            ["remove", "--help"],
+            [
+                "Examples",
+                "skeel remove skill-name",
+                "skeel remove skill-name --source owner/repo",
+                "skeel remove --source owner/repo",
+                "skeel remove skill-name -a",
+            ],
+        ),
+        (
+            ["update", "--help"],
+            [
+                "Examples",
+                "skeel update",
+                "skeel update owner/repo",
+                "skeel update owner/repo skill-name",
+                "skeel update --verbose",
+            ],
+        ),
+    ],
+)
+def test_help_lists_examples(args, expected, capsys) -> None:
+    assert main(args) == 0
+
+    output = plain(capsys.readouterr().out)
+    for text in expected:
+        assert text in output
+
+
 def test_path_defaults_to_project_scope(tmp_path, capsys, monkeypatch) -> None:
     home = tmp_path / "home"
     project = tmp_path / "project"

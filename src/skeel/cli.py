@@ -8,7 +8,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, override
 
-from clypi import ClypiConfig, ClypiFormatter, Command, Positional, arg, configure
+from clypi import (
+    ClypiConfig,
+    ClypiFormatter,
+    Command,
+    Positional,
+    arg,
+    configure,
+    get_config,
+    indented,
+    stack,
+)
 
 from . import __version__
 from .gh import (
@@ -139,6 +149,14 @@ def verbose_arg(*, inherited: bool = False) -> bool:
         inherited=inherited,
         help="Show every update row, including current skills.",
     )
+
+
+def examples(*items: tuple[str, str]) -> str:
+    theme = get_config().theme
+    commands = indented([theme.usage_command(command) for command, _ in items])
+    descriptions = [description for _, description in items]
+    title = theme.section_title("Examples")
+    return f"{title}\n{stack(commands, descriptions)}"
 
 
 class CommonOptions(Protocol):
@@ -1223,6 +1241,16 @@ class PathCommand(SkeelCommand):
         return "path"
 
     @override
+    @classmethod
+    def epilog(cls) -> str:
+        return examples(
+            ("skeel path", "Print the project manifest path"),
+            ("skeel -g path", "Print the user manifest path"),
+            ("skeel path -a", "Print project and user manifest paths"),
+            ("skeel path -a --json", "Print both paths as JSON"),
+        )
+
+    @override
     async def execute(self) -> int:
         return await command_path(self)
 
@@ -1236,6 +1264,16 @@ class Diff(SkeelCommand):
     all: bool = all_scopes_arg(inherited=True)
     dry_run: bool = dry_run_arg(inherited=True)
     json: bool = json_arg(inherited=True)
+
+    @override
+    @classmethod
+    def epilog(cls) -> str:
+        return examples(
+            ("skeel diff", "Compare the project manifest with installed project skills"),
+            ("skeel diff -a", "Compare both project and user scopes"),
+            ("skeel --manifest ./skills.yaml diff", "Compare an explicit manifest"),
+            ("skeel diff --json", "Emit missing and extra skills as JSON"),
+        )
 
     @override
     async def execute(self) -> int:
@@ -1256,6 +1294,16 @@ class ListCommand(SkeelCommand):
     @classmethod
     def prog(cls) -> str:
         return "list"
+
+    @override
+    @classmethod
+    def epilog(cls) -> str:
+        return examples(
+            ("skeel list", "Show project skills with manifest status"),
+            ("skeel list -a", "Show skills in both project and user scopes"),
+            ("skeel -g list", "Show user-scope skills"),
+            ("skeel list --json", "Emit inventory as JSON"),
+        )
 
     @override
     async def execute(self) -> int:
@@ -1282,6 +1330,17 @@ class Apply(SkeelCommand):
     json: bool = json_arg(inherited=True)
 
     @override
+    @classmethod
+    def epilog(cls) -> str:
+        return examples(
+            ("skeel apply", "Reconcile installed project skills with the manifest"),
+            ("skeel apply --dry-run", "Preview installs and removals"),
+            ("skeel apply owner/repo", "Reconcile a single manifest source"),
+            ("skeel apply owner/repo skill-name", "Reconcile one skill from one source"),
+            ("skeel apply --reinstall", "Reinstall every manifest entry"),
+        )
+
+    @override
     async def execute(self) -> int:
         return await command_apply(self)
 
@@ -1306,6 +1365,17 @@ class Add(SkeelCommand):
     all: bool = all_scopes_arg(inherited=True)
     dry_run: bool = dry_run_arg(inherited=True)
     json: bool = json_arg(inherited=True)
+
+    @override
+    @classmethod
+    def epilog(cls) -> str:
+        return examples(
+            ("skeel add owner/repo skill-name", "Add one skill to the project manifest"),
+            ("skeel add owner/repo skill-name@main", "Add a skill pinned to a git ref"),
+            ("skeel add owner/repo", "Add all skills from a source"),
+            ("skeel add owner/repo skill-name --apply", "Add and reconcile immediately"),
+            ("skeel -g add owner/repo skill-name", "Add a skill to the user manifest"),
+        )
 
     @override
     async def execute(self) -> int:
@@ -1335,6 +1405,20 @@ class Remove(SkeelCommand):
     json: bool = json_arg(inherited=True)
 
     @override
+    @classmethod
+    def epilog(cls) -> str:
+        return examples(
+            ("skeel remove skill-name", "Remove a skill by name from the manifest"),
+            (
+                "skeel remove skill-name --source owner/repo",
+                "Disambiguate when multiple sources declare the name",
+            ),
+            ("skeel remove --source owner/repo", "Remove a whole source"),
+            ("skeel remove skill-name --apply", "Remove and reconcile immediately"),
+            ("skeel remove skill-name -a", "Remove matching entries from both scopes"),
+        )
+
+    @override
     async def execute(self) -> int:
         return await command_remove(self)
 
@@ -1359,6 +1443,17 @@ class Update(SkeelCommand):
     json: bool = json_arg(inherited=True)
 
     @override
+    @classmethod
+    def epilog(cls) -> str:
+        return examples(
+            ("skeel update", "Update installed project skills declared by the manifest"),
+            ("skeel update owner/repo", "Update installed skills from one source"),
+            ("skeel update owner/repo skill-name", "Update one installed skill"),
+            ("skeel update -a", "Update skills in both project and user scopes"),
+            ("skeel update --verbose", "Show current skills as well as changed skills"),
+        )
+
+    @override
     async def execute(self) -> int:
         return await command_update(self)
 
@@ -1374,6 +1469,20 @@ class Skeel(Command):
     json: bool = json_arg()
     version: bool = arg(False, help="Print the skeel version and exit.")
     subcommand: PathCommand | Diff | ListCommand | Apply | Add | Remove | Update | None = None
+
+    @override
+    @classmethod
+    def epilog(cls) -> str:
+        return examples(
+            ("skeel add owner/repo skill-name", "Add a skill to the project manifest"),
+            ("skeel diff", "Preview manifest drift"),
+            ("skeel apply --dry-run", "Preview installs and removals"),
+            ("skeel apply", "Install missing skills and remove extras"),
+            ("skeel update", "Update installed skills declared by the manifest"),
+            ("skeel list --json", "Print machine-readable skill inventory"),
+            ("skeel -g apply", "Manage user-scope skills instead of the project"),
+            ("skeel --manifest ./skills.yaml apply", "Use an explicit manifest path"),
+        )
 
     async def execute(self) -> int:
         command = self.subcommand
