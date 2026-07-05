@@ -11,6 +11,7 @@ from .gh import (
     desired_aliases,
     desired_label,
     install_steps,
+    installed_source_matches,
     manual_install_steps,
     source_skill_label,
 )
@@ -363,8 +364,7 @@ def diff_installed_skills(
     installed: Sequence[InstalledSkill],
 ) -> SkillDiff:
     desired = {skill.name: skill for skill in manifest.desired_skills}
-    installed_names = {skill.name for skill in installed}
-    installed_aliases = installed_names | {Path(name).name for name in installed_names}
+    installed_index = installed_skill_index(installed)
     dynamic_sources = tuple(source for source in manifest.sources if source.install_all)
     extra = tuple(
         skill
@@ -375,13 +375,17 @@ def diff_installed_skills(
             installed_skill_matches_dynamic_source(skill, source) for source in dynamic_sources
         )
     )
-    missing_names = set(desired) - installed_aliases
-    missing = [skill for skill in manifest.desired_skills if skill.name in missing_names]
-    missing.extend(
-        DesiredSkill(name="*", spec="*", source=source.source)
-        for source in dynamic_sources
-        if not dynamic_source_installed(source, installed)
-    )
+    missing: list[DesiredSkill] = []
+    for source in manifest.sources:
+        if source.install_all:
+            if not dynamic_source_satisfied(source, installed):
+                missing.append(DesiredSkill(name="*", spec="*", source=source.source))
+            continue
+        for skill in source.skills:
+            desired_skill = DesiredSkill(name=skill.name, spec=skill.spec, source=source.source)
+            match = matching_installed_skill(desired_skill, installed_index)
+            if match is None or not installed_source_matches(match, source):
+                missing.append(desired_skill)
     return SkillDiff(
         missing=tuple(missing),
         extra=tuple(sorted(extra, key=lambda skill: skill.name)),
@@ -505,7 +509,7 @@ def apply_plan(
         *iter_install_plan(
             selected_manifest,
             options,
-            missing={skill.name for skill in diff.missing},
+            missing={(skill.source, skill.name) for skill in diff.missing},
             installed=installed,
         ),
     ]
@@ -566,31 +570,38 @@ def skill_matches_selector(skill: SkillSpec, selected: SkillSpec) -> bool:
     return skill.name == selected.name or skill.spec == selected.spec
 
 
+MissingKey = tuple[str, str]
+
+
 def iter_install_plan(
     manifest: Manifest,
     options: GhOptions,
     *,
-    missing: set[str] | None = None,
+    missing: set[MissingKey] | None = None,
     installed: Sequence[InstalledSkill] = (),
 ) -> Iterator[SkillStep]:
     for source in manifest.sources:
         if missing is not None and not source.install_all and not source.install:
-            skills = tuple(skill for skill in source.skills if skill.name in missing)
+            skills = tuple(
+                skill for skill in source.skills if missing_key(source, skill.name) in missing
+            )
             if not skills:
                 continue
             source = SourceSpec(source=source.source, skills=skills, pin=source.pin)
-        if (
-            missing is not None
-            and source.install_all
-            and dynamic_source_installed(source, installed)
-        ):
+        if missing is not None and source.install_all and missing_key(source, "*") not in missing:
             continue
         if source.install:
-            if missing is not None and not any(skill.name in missing for skill in source.skills):
+            if missing is not None and not any(
+                missing_key(source, skill.name) in missing for skill in source.skills
+            ):
                 continue
             yield from manual_install_steps(source)
             continue
         yield from install_steps(source, options)
+
+
+def missing_key(source: SourceSpec, name: str) -> MissingKey:
+    return (source.source, name)
 
 
 def installed_skill_index(installed: Sequence[InstalledSkill]) -> dict[str, InstalledSkill]:
@@ -650,6 +661,14 @@ def update_installed_skills(
 
 def dynamic_source_installed(source: SourceSpec, installed: Sequence[InstalledSkill]) -> bool:
     return matching_dynamic_source_skill(source, installed) is not None
+
+
+def dynamic_source_satisfied(source: SourceSpec, installed: Sequence[InstalledSkill]) -> bool:
+    return any(
+        installed_skill_matches_dynamic_source(skill, source)
+        and installed_source_matches(skill, source)
+        for skill in installed
+    )
 
 
 def matching_dynamic_source_skills(

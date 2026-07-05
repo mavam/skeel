@@ -220,6 +220,110 @@ name: wrangler
     assert outcome.detail == "main@old1234 → main@new1234"
 
 
+def test_update_steps_reinstalls_unpinned_github_skill_missing_metadata(tmp_path: Path) -> None:
+    skill_path = tmp_path / "metadata-repair"
+    write_skill(
+        skill_path,
+        """
+---
+name: metadata-repair
+---
+# Metadata Repair
+""",
+    )
+    manifest = Manifest(
+        path=Path("manifest.yaml"),
+        sources=(
+            SourceSpec(
+                source="example/skill-catalog",
+                skills=(SkillSpec(spec="metadata-repair", name="metadata-repair"),),
+            ),
+        ),
+    )
+    skill = InstalledSkill(
+        name="metadata-repair",
+        path=skill_path,
+        provenance=read_skill_provenance(skill_path),
+    )
+
+    step = update_steps([skill], GhOptions(directory=tmp_path), manifest=manifest)[0]
+    write_skill(
+        skill_path,
+        """
+---
+metadata:
+  github-ref: refs/heads/main
+  github-repo: https://github.com/example/skill-catalog
+  github-tree-sha: abcdef1234567890
+name: metadata-repair
+---
+# Metadata Repair
+""",
+    )
+
+    assert step.label == "example/skill-catalog@metadata-repair"
+    assert step.command == [
+        "gh",
+        "skill",
+        "install",
+        "example/skill-catalog",
+        "metadata-repair",
+        "--allow-hidden-dirs",
+        "--dir",
+        str(tmp_path),
+        "--force",
+    ]
+    assert step.outcome is not None
+    outcome = step.outcome(
+        ProcessResult(command=[], returncode=0, stdout="Installed metadata-repair")
+    )
+    assert outcome.status == "updated"
+    assert outcome.detail == "unknown → main@abcdef1"
+
+
+def test_update_steps_keep_manual_install_skill_with_missing_metadata_on_gh_update(
+    tmp_path: Path,
+) -> None:
+    skill_path = tmp_path / "manual-helper"
+    write_skill(
+        skill_path,
+        """
+---
+name: manual-helper
+---
+# Manual Helper
+""",
+    )
+    manifest = Manifest(
+        path=Path("manifest.yaml"),
+        sources=(
+            SourceSpec(
+                source="example/manual-skills",
+                skills=(SkillSpec(spec="manual-helper", name="manual-helper"),),
+                install=(("custom-installer", "install", "manual-helper"),),
+            ),
+        ),
+    )
+    skill = InstalledSkill(
+        name="manual-helper",
+        path=skill_path,
+        provenance=read_skill_provenance(skill_path),
+    )
+
+    step = update_steps([skill], GhOptions(directory=tmp_path), manifest=manifest)[0]
+
+    assert step.label == "example/manual-skills@manual-helper"
+    assert step.command == [
+        "gh",
+        "skill",
+        "update",
+        "manual-helper",
+        "--dir",
+        str(tmp_path),
+        "--all",
+    ]
+
+
 def test_update_steps_use_archive_installer_for_pinned_manifest_skills(tmp_path: Path) -> None:
     skill_path = tmp_path / "tenzir-asim"
     write_skill(

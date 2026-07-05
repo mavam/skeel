@@ -13,6 +13,7 @@ from .fast_install import (
     FastInstallError,
     FastInstallSession,
     fast_install_command,
+    is_github_source,
     supports_fast_install,
 )
 from .io import Command, ProcessResult, ProcessRunner, StepExecutor, StepOutcome
@@ -103,6 +104,18 @@ def manual_install_steps(source: SourceSpec) -> list[SkillStep]:
         SkillStep(label=source.source, command=list(command), parallel=False)
         for command in source.install
     ]
+
+
+def source_requires_github_metadata(source: SourceSpec) -> bool:
+    return not source.install and is_github_source(source.source)
+
+
+def installed_source_matches(skill: InstalledSkill, source: SourceSpec) -> bool:
+    return not source_requires_github_metadata(source) or skill.github_source == source.source
+
+
+def needs_source_reinstall(skill: InstalledSkill, source: SourceSpec) -> bool:
+    return source_requires_github_metadata(source) and not installed_source_matches(skill, source)
 
 
 def source_skill_label(source: str, name: str) -> str:
@@ -329,6 +342,10 @@ def update_steps(
                     )
                 )
                 continue
+            if needs_source_reinstall(skill, source):
+                repair = install_step_for_skill(source, skill_spec, options)
+                steps.append(replace(repair, label=label, outcome=update_outcome(skill)))
+                continue
 
         steps.append(
             SkillStep(
@@ -346,6 +363,15 @@ def update_steps(
             )
         )
     return steps
+
+
+def install_step_for_skill(
+    source: SourceSpec,
+    skill: SkillSpec,
+    options: GhOptions,
+) -> SkillStep:
+    source = SourceSpec(source=source.source, skills=(skill,), pin=source.pin)
+    return install_steps(source, options)[0]
 
 
 def update_output(result: ProcessResult) -> str:

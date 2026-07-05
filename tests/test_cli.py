@@ -437,9 +437,9 @@ def test_apply_dry_run_reconciles_missing_and_extra_skills(tmp_path, capsys, mon
         tmp_path,
         """
 sources:
-  tenzir/skills:
-    - tenzir-docs
-    - tenzir-ecs
+  example/skill-catalog:
+    - installed-helper
+    - missing-helper
 """,
     )
     workdir = tmp_path / "work"
@@ -450,7 +450,11 @@ sources:
     async def fake_installed_skills(options, runner):
         assert options.directory == target
         return (
-            InstalledSkill(name="tenzir-docs", path=target / "tenzir-docs"),
+            InstalledSkill(
+                name="installed-helper",
+                path=target / "installed-helper",
+                source_url="https://github.com/example/skill-catalog",
+            ),
             InstalledSkill(name="obsolete", path=target / "obsolete"),
         )
 
@@ -460,17 +464,57 @@ sources:
 
     payload = json.loads(capsys.readouterr().out)
     assert [step["label"] for step in payload["steps"]] == [
-        "tenzir/skills@tenzir-ecs",
+        "example/skill-catalog@missing-helper",
         "obsolete",
     ]
     assert payload["steps"][0]["command"][:5] == [
         "gh",
         "skill",
         "install",
-        "tenzir/skills",
-        "tenzir-ecs",
+        "example/skill-catalog",
+        "missing-helper",
     ]
     assert payload["steps"][1]["command"] == ["rm", "-rf", str(target / "obsolete")]
+
+
+def test_apply_repairs_missing_github_metadata_once(tmp_path, capsys, monkeypatch) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  example/skill-catalog:
+    - metadata-repair
+""",
+    )
+    target = tmp_path / ".agents" / "skills"
+    target.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+    source_urls = iter(["", "https://github.com/example/skill-catalog"])
+
+    async def fake_installed_skills(options, runner):
+        assert options.directory == target
+        return (
+            InstalledSkill(
+                name="metadata-repair",
+                path=target / "metadata-repair",
+                source_url=next(source_urls),
+            ),
+        )
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "--manifest", str(path), "apply", "--dry-run"]) == 0
+    first = json.loads(capsys.readouterr().out)
+    assert [(step["label"], step["command"][:5]) for step in first["steps"]] == [
+        (
+            "example/skill-catalog@metadata-repair",
+            ["gh", "skill", "install", "example/skill-catalog", "metadata-repair"],
+        )
+    ]
+
+    assert main(["--json", "--manifest", str(path), "apply", "--dry-run"]) == 0
+    second = json.loads(capsys.readouterr().out)
+    assert second["steps"] == []
 
 
 def test_apply_defaults_to_project_scope(tmp_path, capsys, monkeypatch) -> None:
@@ -569,11 +613,11 @@ def test_apply_source_selector_does_not_remove_unselected_skills(
         tmp_path,
         """
 sources:
-  cloudflare/skills:
-    - wrangler
-  tenzir/skills:
-    - tenzir-docs
-    - tenzir-ecs
+  example/ignored-catalog:
+    - ignored-helper
+  example/skill-catalog:
+    - installed-helper
+    - missing-helper
 """,
     )
     target = tmp_path / ".agents" / "skills"
@@ -583,16 +627,32 @@ sources:
     async def fake_installed_skills(options, runner):
         assert options.directory == target
         return (
-            InstalledSkill(name="tenzir-docs", path=target / "tenzir-docs"),
+            InstalledSkill(
+                name="installed-helper",
+                path=target / "installed-helper",
+                source_url="https://github.com/example/skill-catalog",
+            ),
             InstalledSkill(name="obsolete", path=target / "obsolete"),
         )
 
     monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
 
-    assert main(["--json", "--manifest", str(path), "apply", "tenzir/skills", "--dry-run"]) == 0
+    assert (
+        main(
+            [
+                "--json",
+                "--manifest",
+                str(path),
+                "apply",
+                "example/skill-catalog",
+                "--dry-run",
+            ]
+        )
+        == 0
+    )
 
     payload = json.loads(capsys.readouterr().out)
-    assert [step["label"] for step in payload["steps"]] == ["tenzir/skills@tenzir-ecs"]
+    assert [step["label"] for step in payload["steps"]] == ["example/skill-catalog@missing-helper"]
 
 
 def test_apply_selector_requires_manifest_match(tmp_path, capsys, monkeypatch) -> None:
@@ -1376,17 +1436,23 @@ def test_diff_matches_namespaced_installed_skills_by_basename(monkeypatch) -> No
         path=Path("manifest.yaml"),
         sources=(
             SourceSpec(
-                source="mattpocock/skills",
+                source="example/skill-catalog",
                 skills=(
-                    SkillSpec(spec="caveman", name="caveman"),
-                    SkillSpec(spec="teach", name="teach"),
+                    SkillSpec(spec="helper-alpha", name="helper-alpha"),
+                    SkillSpec(spec="helper-beta", name="helper-beta"),
                 ),
             ),
         ),
     )
 
     async def fake_installed_skills(options, runner):
-        return (InstalledSkill(name="productivity/caveman", path=Path("/tmp/skills/caveman")),)
+        return (
+            InstalledSkill(
+                name="group/helper-alpha",
+                path=Path("/tmp/skills/helper-alpha"),
+                source_url="https://github.com/example/skill-catalog",
+            ),
+        )
 
     monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
 
@@ -1395,7 +1461,7 @@ def test_diff_matches_namespaced_installed_skills_by_basename(monkeypatch) -> No
     )
 
     assert [(skill.name, skill.source) for skill in diff.missing] == [
-        ("teach", "mattpocock/skills")
+        ("helper-beta", "example/skill-catalog")
     ]
     assert diff.extra == ()
 
@@ -2325,9 +2391,9 @@ def test_update_skill_selector_only_updates_selected_manifest_skill(
         tmp_path,
         """
 sources:
-  tenzir/skills:
-    - tenzir-docs
-    - tenzir-ecs
+  example/skill-catalog:
+    - helper-alpha
+    - helper-beta
 """,
     )
     target = tmp_path / ".agents" / "skills"
@@ -2337,8 +2403,16 @@ sources:
     async def fake_installed_skills(options, runner):
         assert options.directory == target
         return (
-            InstalledSkill(name="tenzir-docs", path=target / "tenzir-docs"),
-            InstalledSkill(name="tenzir-ecs", path=target / "tenzir-ecs"),
+            InstalledSkill(
+                name="helper-alpha",
+                path=target / "helper-alpha",
+                source_url="https://github.com/example/skill-catalog",
+            ),
+            InstalledSkill(
+                name="helper-beta",
+                path=target / "helper-beta",
+                source_url="https://github.com/example/skill-catalog",
+            ),
         )
 
     monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
@@ -2350,8 +2424,8 @@ sources:
                 "--manifest",
                 str(path),
                 "update",
-                "tenzir/skills",
-                "tenzir-ecs",
+                "example/skill-catalog",
+                "helper-beta",
                 "--dry-run",
             ]
         )
@@ -2359,12 +2433,12 @@ sources:
     )
 
     payload = json.loads(capsys.readouterr().out)
-    assert [step["label"] for step in payload["steps"]] == ["tenzir/skills@tenzir-ecs"]
+    assert [step["label"] for step in payload["steps"]] == ["example/skill-catalog@helper-beta"]
     assert payload["steps"][0]["command"] == [
         "gh",
         "skill",
         "update",
-        "tenzir-ecs",
+        "helper-beta",
         "--dir",
         str(target),
         "--all",
