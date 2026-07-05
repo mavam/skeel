@@ -517,6 +517,36 @@ sources:
     assert second["steps"] == []
 
 
+def test_apply_dynamic_source_removes_unknown_skill_before_reinstalling_all(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  example/skill-catalog:
+""",
+    )
+    target = tmp_path / ".agents" / "skills"
+    target.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_installed_skills(options, runner):
+        assert options.directory == target
+        return (InstalledSkill(name="metadata-repair", path=target / "metadata-repair"),)
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "--manifest", str(path), "apply", "--dry-run"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [(step["label"], step["command"][:4]) for step in payload["steps"]] == [
+        ("metadata-repair", ["rm", "-rf", str(target / "metadata-repair")]),
+        ("example/skill-catalog@*", ["gh", "skill", "install", "example/skill-catalog"]),
+    ]
+    assert payload["steps"][1]["command"][4] == "--all"
+
+
 def test_apply_defaults_to_project_scope(tmp_path, capsys, monkeypatch) -> None:
     home = tmp_path / "home"
     project = tmp_path / "project"
@@ -2343,6 +2373,80 @@ def test_update_all_user_selector_skips_shadowed_skill_but_user_scope_can_force_
     assert "warnings" not in payload
     assert [(step["scope"], step["label"]) for step in payload["steps"]] == [
         ("user", "cloudflare/skills@wrangler"),
+    ]
+
+
+def test_update_dynamic_source_repairs_missing_metadata_with_install_all(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  example/skill-catalog:
+""",
+    )
+    target = tmp_path / ".agents" / "skills"
+    target.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_installed_skills(options, runner):
+        assert options.directory == target
+        return (InstalledSkill(name="metadata-repair", path=target / "metadata-repair"),)
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "--manifest", str(path), "update", "--dry-run"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [(step["label"], step["command"][:5]) for step in payload["steps"]] == [
+        (
+            "example/skill-catalog@*",
+            ["gh", "skill", "install", "example/skill-catalog", "--all"],
+        )
+    ]
+
+
+def test_update_dynamic_source_selector_repairs_missing_metadata_with_install_all(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  example/skill-catalog:
+""",
+    )
+    target = tmp_path / ".agents" / "skills"
+    target.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_installed_skills(options, runner):
+        assert options.directory == target
+        return (InstalledSkill(name="metadata-repair", path=target / "metadata-repair"),)
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert (
+        main(
+            [
+                "--json",
+                "--manifest",
+                str(path),
+                "update",
+                "example/skill-catalog",
+                "--dry-run",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [(step["label"], step["command"][:5]) for step in payload["steps"]] == [
+        (
+            "example/skill-catalog@*",
+            ["gh", "skill", "install", "example/skill-catalog", "--all"],
+        )
     ]
 
 

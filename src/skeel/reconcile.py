@@ -505,17 +505,28 @@ def apply_plan(
         return list(iter_install_plan(selected_manifest, options))
 
     diff = diff_installed_skills(selected_manifest, installed)
-    steps = [
-        *iter_install_plan(
+    install = list(
+        iter_install_plan(
             selected_manifest,
             options,
             missing={(skill.source, skill.name) for skill in diff.missing},
             installed=installed,
-        ),
-    ]
-    if selector is None:
-        steps.extend(remove_steps(diff.extra, options))
-    return steps
+        )
+    )
+    if selector is not None:
+        return install
+
+    remove = remove_steps(diff.extra, options)
+    if has_missing_dynamic_source(selected_manifest, diff):
+        return [*remove, *install]
+    return [*install, *remove]
+
+
+def has_missing_dynamic_source(manifest: Manifest, diff: SkillDiff) -> bool:
+    missing_sources = {skill.source for skill in diff.missing if skill.name == "*"}
+    return any(
+        source.install_all and source.source in missing_sources for source in manifest.sources
+    )
 
 
 def filter_manifest(
@@ -636,6 +647,8 @@ def update_installed_skills(
     for source in filter_manifest(manifest, selector).sources:
         if source.install_all:
             matches = matching_dynamic_source_skills(source, installed)
+            if not matches and selector.skill is None:
+                matches = tuple(skill for skill in installed if not skill.github_source)
         else:
             matches = tuple(
                 match

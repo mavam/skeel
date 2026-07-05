@@ -15,4 +15,11 @@ skeel apply
 skeel update
 ```
 
+This also works for sources that install all skills from a repository:
+
+```yaml
+sources:
+  example/skill-catalog:
+```
+
 After `gh skill` writes the GitHub metadata, re-running the same command no longer schedules another repair.
