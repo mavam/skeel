@@ -1,15 +1,15 @@
 # skeel
 
-`skeel` is a Python 3.14 CLI for declarative agent skill management. It reads a
-YAML desired-state manifest and applies it through backends, such as `gh skill`.
+`skeel` is a CLI for declarative agent skill management. It reads a YAML
+desired-state manifest and applies it via `gh skill`.
 
 ## Repository Layout
 
-- `.github/workflows/` — CI and release/publish workflows
-- `changelog/` — release notes managed via `tenzir-ship`
-- `examples/` — example manifests
-- `src/skeel/` — package source (`cli.py`, `manifest.py`, `backends.py`)
-- `tests/` — pytest suite
+- `.github/workflows/`: CI and release/publish workflows
+- `changelog/`: release notes managed via `tenzir-ship`
+- `examples/`: example manifests
+- `src/skeel/`: package source (`cli.py`, `manifest.py`, `backends.py`)
+- `tests/`: pytest suite
 
 ## Setup
 
@@ -19,7 +19,7 @@ Install Lefthook once per clone:
 uvx lefthook install
 ```
 
-Pushing runs the pre-push quality gate automatically.
+Pushing runs the quality gates automatically. No need to run checks manually.
 
 ## Release engineering
 
