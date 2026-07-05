@@ -1,0 +1,9 @@
+created: 2026-07-05
+title: Managed GitHub skill metadata repair
+intro: >-
+  skeel now repairs managed GitHub skills when their provenance metadata is missing
+  or points at a different manifest source. Re-running apply or update after the repair
+  stays idempotent.
+source:
+  mode: sync-stable-queue
+  previous_stable: v1.0.0
