@@ -13,6 +13,7 @@ from .fast_install import (
     FastInstallError,
     FastInstallSession,
     fast_install_command,
+    is_github_source,
     supports_fast_install,
 )
 from .io import Command, ProcessResult, ProcessRunner, StepExecutor, StepOutcome
@@ -103,6 +104,18 @@ def manual_install_steps(source: SourceSpec) -> list[SkillStep]:
         SkillStep(label=source.source, command=list(command), parallel=False)
         for command in source.install
     ]
+
+
+def source_requires_github_metadata(source: SourceSpec) -> bool:
+    return not source.install and is_github_source(source.source)
+
+
+def installed_source_matches(skill: InstalledSkill, source: SourceSpec) -> bool:
+    return not source_requires_github_metadata(source) or skill.github_source == source.source
+
+
+def needs_source_reinstall(skill: InstalledSkill, source: SourceSpec) -> bool:
+    return source_requires_github_metadata(source) and not installed_source_matches(skill, source)
 
 
 def source_skill_label(source: str, name: str) -> str:
@@ -306,8 +319,18 @@ def update_steps(
     labels = desired_labels(manifest)
     specs = desired_install_specs(manifest)
     sessions: dict[str, FastInstallSession] = {}
-    steps: list[SkillStep] = []
+    repair_unknown_paths = dynamic_repair_unknown_paths(installed, manifest)
+    steps = install_all_repair_steps(
+        installed,
+        manifest,
+        options,
+        repair_unknown_paths=repair_unknown_paths,
+    )
+    if not steps:
+        repair_unknown_paths = set()
     for skill in sorted(installed, key=lambda skill: skill.name):
+        if skill.path in repair_unknown_paths:
+            continue
         label = labels.get(skill.name, labels.get(skill.basename, skill.label))
         if match := matching_desired_install(skill, specs):
             source, skill_spec = match
@@ -329,6 +352,10 @@ def update_steps(
                     )
                 )
                 continue
+            if needs_source_reinstall(skill, source):
+                repair = install_step_for_skill(source, skill_spec, options)
+                steps.append(replace(repair, label=label, outcome=update_outcome(skill)))
+                continue
 
         steps.append(
             SkillStep(
@@ -346,6 +373,53 @@ def update_steps(
             )
         )
     return steps
+
+
+def install_step_for_skill(
+    source: SourceSpec,
+    skill: SkillSpec,
+    options: GhOptions,
+) -> SkillStep:
+    source = SourceSpec(source=source.source, skills=(skill,), pin=source.pin)
+    return install_steps(source, options)[0]
+
+
+def dynamic_repair_unknown_paths(
+    installed: Sequence[InstalledSkill],
+    manifest: Manifest,
+) -> set[Path]:
+    specs = desired_install_specs(manifest)
+    return {
+        skill.path
+        for skill in installed
+        if not skill.github_source and matching_desired_install(skill, specs) is None
+    }
+
+
+def install_all_repair_steps(
+    installed: Sequence[InstalledSkill],
+    manifest: Manifest,
+    options: GhOptions,
+    *,
+    repair_unknown_paths: set[Path],
+) -> list[SkillStep]:
+    if not repair_unknown_paths:
+        return []
+
+    steps: list[SkillStep] = []
+    for source in manifest.sources:
+        if not source.install_all or not source_requires_github_metadata(source):
+            continue
+        if any(installed_source_matches(skill, source) for skill in installed):
+            continue
+        for step in install_steps(source, options):
+            steps.append(replace(step, outcome=reinstall_outcome))
+    return steps
+
+
+def reinstall_outcome(result: ProcessResult) -> StepOutcome:
+    del result
+    return StepOutcome(status="updated")
 
 
 def update_output(result: ProcessResult) -> str:
