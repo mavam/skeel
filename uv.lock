@@ -544,13 +544,13 @@ dev = [
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-cov", specifier = ">=5.0.0" },
     { name = "ruff", specifier = ">=0.8.0" },
-    { name = "tenzir-ship", specifier = ">=1.8.0" },
+    { name = "tenzir-ship", specifier = ">=1.10.1" },
     { name = "types-pyyaml", specifier = ">=6.0.12.20250915" },
 ]
 
 [[package]]
 name = "tenzir-ship"
-version = "1.8.0"
+version = "1.10.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
@@ -560,9 +560,9 @@ dependencies = [
     { name = "pyyaml" },
     { name = "rich" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/43/c1/427703f63d2a8f45c75bb44a1f88287aa9df7f00ca207b6150ce851d6858/tenzir_ship-1.8.0.tar.gz", hash = "sha256:2021559dfa7ac3330829485d19a792cdc375d7265667bb04d9ba7a58cf7ccd8b", size = 143231, upload-time = "2026-06-10T16:40:05.604Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/47/86/14bac10e885bdb7396759838af9e911758df0f009a31a8b56fe9fb56d528/tenzir_ship-1.10.1.tar.gz", hash = "sha256:00fd0c405e148ffa27e481b20501c587329b868da6e066da8486386b8206da91", size = 151121, upload-time = "2026-07-04T08:34:28.391Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5a/ed/69af9594d065839897db8811571b9d7588050fc9994ad5f660d2ef944c4c/tenzir_ship-1.8.0-py3-none-any.whl", hash = "sha256:1ee5185b6f1b51d0945b7d67f57a28dab11615b6ed04d2fe63f75741ce7c6ce9", size = 90028, upload-time = "2026-06-10T16:40:04.389Z" },
+    { url = "https://files.pythonhosted.org/packages/8e/56/e7d844ed905a3abfd936f904b65b0f006468c6df432730b83d67c314916c/tenzir_ship-1.10.1-py3-none-any.whl", hash = "sha256:2b7259719613f5a5b99ef9839013722be156f51fcd5e61bfc3bc2368044f3c22", size = 92339, upload-time = "2026-07-04T08:34:27.257Z" },
 ]
 
 [[package]]
