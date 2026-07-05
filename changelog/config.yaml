@@ -2,3 +2,4 @@ id: skeel
 name: skeel
 description: Declarative agent skill manager for gh skill.
 repository: https://github.com/mavam/skeel
+require_pr: true
