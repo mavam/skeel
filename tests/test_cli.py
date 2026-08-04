@@ -2376,6 +2376,46 @@ def test_update_all_user_selector_skips_shadowed_skill_but_user_scope_can_force_
     ]
 
 
+def test_update_branch_pinned_dynamic_source_refreshes_once(tmp_path, capsys, monkeypatch) -> None:
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    target = home / ".agents" / "skills"
+    target.mkdir(parents=True)
+    project.mkdir()
+    (home / ".agents" / "skills.yaml").write_text(
+        """
+sources:
+  mavam/skills:
+    pin: main
+""".strip()
+    )
+    monkeypatch.chdir(project)
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: home)
+    installed = (
+        installed_update_skill(target, name="code-review", source="mavam/skills"),
+        installed_update_skill(target, name="mavam", source="mavam/skills"),
+    )
+
+    async def fake_installed_skills(options, runner):
+        assert options.directory == target
+        return installed
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    for selector in ([], ["mavam/skills"]):
+        assert main(["--json", "-g", "update", *selector, "--dry-run"]) == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert [(step["label"], step["command"]) for step in payload["steps"]] == [
+            ("mavam/skills@*", ["gh", "api", "repos/mavam/skills/tarball/main"]),
+        ]
+
+    assert main(["--json", "-g", "update", "mavam/skills", "code-review", "--dry-run"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert [(step["label"], step["command"]) for step in payload["steps"]] == [
+        ("mavam/skills@code-review", ["gh", "api", "repos/mavam/skills/tarball/main"]),
+    ]
+
+
 def test_update_dynamic_source_repairs_missing_metadata_with_install_all(
     tmp_path, capsys, monkeypatch
 ) -> None:

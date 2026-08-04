@@ -40,6 +40,7 @@ class FastInstallSession:
     def __init__(self, source: str) -> None:
         self.source = source
         self._archives: dict[str, tuple[tempfile.TemporaryDirectory[str], Path, ResolvedRef]] = {}
+        self._resolved_refs: dict[str, ResolvedRef] = {}
         self._tree_shas: dict[str, dict[str, str]] = {}
         self._skills: dict[str, tuple[DiscoveredSkill, ...]] = {}
         self._lock = threading.RLock()
@@ -71,6 +72,27 @@ class FastInstallSession:
                 directory=directory,
             )
 
+    def immutable_tree_is_current(
+        self,
+        pin: str,
+        installed_tree_shas: dict[str, str],
+    ) -> bool:
+        if not installed_tree_shas:
+            return False
+        resolved = self._resolve_ref(pin)
+        if resolved.ref.startswith("refs/heads/"):
+            return False
+        remote_tree_shas = self._source_tree_shas(resolved.commit_sha)
+        return all(
+            remote_tree_shas.get(path) == tree_sha for path, tree_sha in installed_tree_shas.items()
+        )
+
+    def _resolve_ref(self, pin: str) -> ResolvedRef:
+        with self._lock:
+            if pin not in self._resolved_refs:
+                self._resolved_refs[pin] = resolve_ref(self.source, pin)
+            return self._resolved_refs[pin]
+
     def _source_archive(
         self,
         pin: str,
@@ -78,7 +100,7 @@ class FastInstallSession:
         with self._lock:
             if pin in self._archives:
                 return self._archives[pin]
-            resolved = resolve_ref(self.source, pin)
+            resolved = self._resolve_ref(pin)
             tempdir = tempfile.TemporaryDirectory(prefix="skeel-")
             root = download_archive(self.source, resolved.commit_sha, Path(tempdir.name))
             self._archives[pin] = (tempdir, root, resolved)

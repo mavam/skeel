@@ -1,3 +1,4 @@
+import asyncio
 import json
 import threading
 import time
@@ -14,7 +15,8 @@ from skeel.fast_install import (
     install_skill,
     select_skill,
 )
-from skeel.manifest import SkillSpec, SourceSpec
+from skeel.gh import GhOptions, InstalledSkill, read_skill_provenance, update_steps
+from skeel.manifest import Manifest, SkillSpec, SourceSpec
 
 
 def test_install_skill_copies_files_and_injects_github_metadata(
@@ -183,3 +185,86 @@ def test_fast_install_session_reuses_remote_cache_concurrently(
         "fetch_tree_shas": 1,
     }
     assert sorted(installed) == ["skill-a", "skill-b"]
+
+
+def test_pinned_install_all_refresh_discovers_new_skill(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "home"
+    source_root = tmp_path / "source"
+    discovered: dict[str, DiscoveredSkill] = {}
+    for name in ("skill-a", "skill-b", "skill-c"):
+        directory = source_root / "skills" / name
+        directory.mkdir(parents=True)
+        (directory / "SKILL.md").write_text(f"---\nname: {name}\n---\n# {name}\n")
+        discovered[name] = DiscoveredSkill(
+            name=name,
+            path=f"skills/{name}",
+            directory=directory,
+        )
+
+    target = tmp_path / "target"
+    monkeypatch.setattr("skeel.fast_install.Path.home", lambda: home)
+    for name in ("skill-a", "skill-b"):
+        install_skill(
+            source="owner/repo",
+            pin="main",
+            ref="refs/heads/main",
+            tree_sha=f"old-{name}",
+            skill=discovered[name],
+            directory=target,
+        )
+
+    monkeypatch.setattr(
+        "skeel.fast_install.resolve_ref",
+        lambda source, pin: ResolvedRef(ref="refs/heads/main", commit_sha="commit-new"),
+    )
+    monkeypatch.setattr(
+        "skeel.fast_install.download_archive",
+        lambda source, commit_sha, directory: source_root,
+    )
+    monkeypatch.setattr(
+        "skeel.fast_install.fetch_tree_shas",
+        lambda source, commit_sha: {f"skills/{name}": f"new-{name}" for name in discovered},
+    )
+
+    installed = tuple(
+        InstalledSkill(
+            name=name,
+            path=target / name,
+            provenance=read_skill_provenance(target / name),
+        )
+        for name in ("skill-a", "skill-b")
+    )
+    manifest = Manifest(
+        path=Path("manifest.yaml"),
+        sources=(
+            SourceSpec(
+                source="owner/repo",
+                skills=(),
+                install_all=True,
+                pin="main",
+            ),
+        ),
+    )
+    step = update_steps(installed, GhOptions(directory=target), manifest=manifest)[0]
+    assert step.executor is not None
+    assert step.outcome is not None
+
+    result = asyncio.run(step.executor())
+    outcome = step.outcome(result)
+
+    assert result.returncode == 0
+    assert outcome.status == "updated"
+    assert sorted(path.name for path in target.iterdir()) == ["skill-a", "skill-b", "skill-c"]
+    for name in discovered:
+        provenance = read_skill_provenance(target / name)
+        assert provenance.source == "owner/repo"
+        assert provenance.ref == "refs/heads/main"
+        assert provenance.path == f"skills/{name}"
+        assert provenance.tree_sha == f"new-{name}"
+
+    lockfile = json.loads((home / ".agents" / ".skill-lock.json").read_text())
+    assert sorted(lockfile["skills"]) == ["skill-a", "skill-b", "skill-c"]
+    assert all(lockfile["skills"][name]["skillFolderHash"] == f"new-{name}" for name in discovered)

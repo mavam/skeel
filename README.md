@@ -42,7 +42,9 @@ sources:
 
 An empty value installs all skills from a source. A list is the common form for
 selected skills. Use a nested mapping only for source options, such as `pin` or
-custom `install` commands.
+custom `install` commands. During `update`, selected skills refresh independently,
+while an install-all source refreshes once and discovers newly added upstream
+skills.
 
 By default, `skeel` uses project scope: `.agents/skills.yaml` and
 `.agents/skills` in the current working directory. Use `-g` or `--scope user`
@@ -148,10 +150,16 @@ uvx skeel apply
 
 ### `update`
 
-Update installed skills that are represented by the manifest. Each installed
-skill is checked independently, and remote update checks run in parallel. Pass a
-source, or a source and skill, to update only that manifest selection. A selector
-that does not match the manifest exits with an error.
+Update installed skills that are represented by the manifest. Explicit skill
+entries update independently, and remote update checks run in parallel. An
+install-all entry refreshes once at source level, including when it uses a branch
+pin such as `main`. This refresh also installs skills added to the upstream
+source since the previous update.
+
+Pass a source, or a source and skill, to update only that manifest selection. A
+source-and-skill selector stays targeted to that skill, even when the manifest
+entry normally installs all skills. A selector that does not match the manifest
+exits with an error.
 
 ```sh
 uvx skeel update
@@ -168,9 +176,16 @@ uvx skeel update -a
 ```
 
 Pinned GitHub entries are updated by resolving the configured pin and
-refreshing installed files when the source changes. Skills installed by
-`gh skill` include provenance in `SKILL.md` frontmatter, so future updates can
+refreshing installed files when the source changes. Branch pins are checked for
+new content. Immutable tag and commit pins report `current` when their recorded
+tree is unchanged, without downloading the same archive again. Skills installed
+by `gh skill` include provenance in `SKILL.md` frontmatter, so future updates can
 track them directly.
+
+Install-all updates add and refresh skills, but they don't prune directories for
+skills removed upstream. Use `apply --reinstall` when you need to force-refresh
+an install-all entry. Upstream removal pruning requires additional ownership
+checks and is deferred to a future `apply` reconciliation improvement.
 
 ### `add`
 

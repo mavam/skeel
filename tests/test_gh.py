@@ -3,11 +3,13 @@ from pathlib import Path
 
 import pytest
 
+from skeel.fast_install import ResolvedRef
 from skeel.gh import (
     GhOptions,
     InstalledSkill,
     SkillProvenance,
     SkillStep,
+    classify_source_inventory_change,
     classify_update_output,
     fast_update_outcome,
     install_steps,
@@ -15,11 +17,13 @@ from skeel.gh import (
     manual_install_steps,
     parse_gh_version,
     read_skill_provenance,
+    source_update_outcome,
     update_outcome,
     update_steps,
 )
 from skeel.io import ProcessResult
 from skeel.manifest import Manifest, SkillSpec, SourceSpec
+from skeel.reconcile import filter_source
 
 
 class FakeRunner:
@@ -518,3 +522,211 @@ def test_scoped_steps_stamps_scope_onto_every_step() -> None:
     # Project (and unscoped) steps carry no marker.
     assert [step.scope for step in scoped_steps(steps, "project")] == ["project", "project"]
     assert [step.scope for step in scoped_steps(steps, None)] == [None, None]
+
+
+def dynamic_skill(tmp_path: Path, name: str, *, sha: str = "old123456789") -> InstalledSkill:
+    path = tmp_path / name
+    write_skill(
+        path,
+        f"""
+---
+metadata:
+  github-ref: refs/heads/main
+  github-repo: https://github.com/mavam/skills
+  github-tree-sha: {sha}
+  github-path: skills/{name}
+name: {name}
+---
+# {name}
+""",
+    )
+    return InstalledSkill(
+        name=name,
+        path=path,
+        provenance=read_skill_provenance(path),
+    )
+
+
+def dynamic_manifest(*, pin: str | None = None) -> Manifest:
+    return Manifest(
+        path=Path("manifest.yaml"),
+        sources=(
+            SourceSpec(
+                source="mavam/skills",
+                skills=(),
+                install_all=True,
+                pin=pin,
+            ),
+        ),
+    )
+
+
+def test_update_steps_refresh_unpinned_dynamic_source_once(tmp_path: Path) -> None:
+    installed = [dynamic_skill(tmp_path, "code-review"), dynamic_skill(tmp_path, "mavam")]
+
+    steps = update_steps(installed, GhOptions(directory=tmp_path), manifest=dynamic_manifest())
+
+    assert len(steps) == 1
+    assert steps[0].label == "mavam/skills@*"
+    assert steps[0].command == [
+        "gh",
+        "skill",
+        "install",
+        "mavam/skills",
+        "--all",
+        "--allow-hidden-dirs",
+        "--dir",
+        str(tmp_path),
+        "--force",
+    ]
+
+
+def test_update_steps_refresh_branch_pinned_dynamic_source_once(tmp_path: Path) -> None:
+    installed = [dynamic_skill(tmp_path, "code-review"), dynamic_skill(tmp_path, "mavam")]
+
+    steps = update_steps(
+        installed,
+        GhOptions(directory=tmp_path),
+        manifest=dynamic_manifest(pin="main"),
+    )
+
+    assert len(steps) == 1
+    assert steps[0].label == "mavam/skills@*"
+    assert steps[0].command == ["gh", "api", "repos/mavam/skills/tarball/main"]
+    assert steps[0].executor is not None
+
+
+def test_update_steps_exclude_dynamic_skills_from_per_skill_updates(tmp_path: Path) -> None:
+    installed = [
+        dynamic_skill(tmp_path, "code-review"),
+        dynamic_skill(tmp_path, "mavam"),
+        InstalledSkill(name="local", path=tmp_path / "local"),
+    ]
+
+    steps = update_steps(installed, GhOptions(directory=tmp_path), manifest=dynamic_manifest())
+
+    assert [step.label for step in steps] == ["mavam/skills@*", "local"]
+    assert steps[1].command[:4] == ["gh", "skill", "update", "local"]
+
+
+def test_update_steps_keep_explicit_sources_per_skill(tmp_path: Path) -> None:
+    installed = [dynamic_skill(tmp_path, "code-review"), dynamic_skill(tmp_path, "mavam")]
+    manifest = Manifest(
+        path=Path("manifest.yaml"),
+        sources=(
+            SourceSpec(
+                source="mavam/skills",
+                skills=(
+                    SkillSpec(spec="code-review", name="code-review"),
+                    SkillSpec(spec="mavam", name="mavam"),
+                ),
+            ),
+        ),
+    )
+
+    steps = update_steps(installed, GhOptions(directory=tmp_path), manifest=manifest)
+
+    assert [step.label for step in steps] == [
+        "mavam/skills@code-review",
+        "mavam/skills@mavam",
+    ]
+    assert all(step.command[:3] == ["gh", "skill", "update"] for step in steps)
+
+
+def test_dynamic_source_filtered_to_skill_uses_targeted_install(tmp_path: Path) -> None:
+    installed = [dynamic_skill(tmp_path, "code-review"), dynamic_skill(tmp_path, "mavam")]
+    source = filter_source(dynamic_manifest(pin="main").sources[0], "code-review")
+    assert source is not None
+    manifest = Manifest(path=Path("manifest.yaml"), sources=(source,))
+
+    steps = update_steps(installed[:1], GhOptions(directory=tmp_path), manifest=manifest)
+
+    assert len(steps) == 1
+    assert steps[0].label == "mavam/skills@code-review"
+    assert steps[0].command == ["gh", "api", "repos/mavam/skills/tarball/main"]
+
+
+def test_dynamic_source_missing_metadata_uses_unified_source_step(tmp_path: Path) -> None:
+    path = tmp_path / "metadata-repair"
+    write_skill(path, "---\nname: metadata-repair\n---\n# Metadata Repair")
+    installed = [InstalledSkill(name="metadata-repair", path=path)]
+
+    steps = update_steps(installed, GhOptions(directory=tmp_path), manifest=dynamic_manifest())
+
+    assert len(steps) == 1
+    assert steps[0].label == "mavam/skills@*"
+    assert steps[0].command[:5] == ["gh", "skill", "install", "mavam/skills", "--all"]
+
+
+def test_source_update_outcome_classifies_inventory_changes(tmp_path: Path) -> None:
+    source = dynamic_manifest().sources[0]
+    skill = dynamic_skill(tmp_path, "code-review")
+    options = GhOptions(directory=tmp_path)
+
+    unchanged = source_update_outcome(source, [skill], options)
+    assert unchanged(ProcessResult(command=[], returncode=0)).status == "current"
+
+    changed = source_update_outcome(source, [skill], options)
+    dynamic_skill(tmp_path, "code-review", sha="new123456789")
+    changed_result = changed(ProcessResult(command=[], returncode=0))
+    assert changed_result.status == "updated"
+    assert changed_result.detail == "main@old1234 → main@new1234"
+
+    current_skill = dynamic_skill(tmp_path, "code-review", sha="new123456789")
+    added = source_update_outcome(source, [current_skill], options)
+    dynamic_skill(tmp_path, "mavam", sha="other123456789")
+    added_result = added(ProcessResult(command=[], returncode=0))
+    assert added_result.status == "updated"
+    assert added_result.detail == "+1 skill"
+
+
+def test_source_inventory_classifier_summarizes_nonuniform_changes() -> None:
+    before = {
+        Path("a"): SkillProvenance(ref="refs/heads/main", tree_sha="old-a"),
+        Path("b"): SkillProvenance(ref="refs/heads/main", tree_sha="old-b"),
+    }
+    after = {
+        Path("a"): SkillProvenance(ref="refs/heads/main", tree_sha="new-a"),
+        Path("b"): SkillProvenance(ref="refs/heads/main", tree_sha="new-b"),
+    }
+
+    outcome = classify_source_inventory_change(before, after)
+
+    assert outcome.status == "updated"
+    assert outcome.detail == "2 changed"
+
+
+def test_immutable_dynamic_source_skips_unchanged_archive(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    skill = dynamic_skill(tmp_path, "code-review")
+    source = dynamic_manifest(pin="v1.0.0").sources[0]
+    manifest = Manifest(path=Path("manifest.yaml"), sources=(source,))
+    calls = {"download": 0}
+
+    monkeypatch.setattr(
+        "skeel.fast_install.resolve_ref",
+        lambda source, pin: ResolvedRef(ref="refs/tags/v1.0.0", commit_sha="commit123"),
+    )
+    monkeypatch.setattr(
+        "skeel.fast_install.fetch_tree_shas",
+        lambda source, sha: {"skills/code-review": "old123456789"},
+    )
+
+    def unexpected_download(source: str, commit_sha: str, directory: Path) -> Path:
+        calls["download"] += 1
+        raise AssertionError("unchanged immutable source should not download an archive")
+
+    monkeypatch.setattr("skeel.fast_install.download_archive", unexpected_download)
+    step = update_steps([skill], GhOptions(directory=tmp_path), manifest=manifest)[0]
+    assert step.executor is not None
+    assert step.outcome is not None
+
+    result = asyncio.run(step.executor())
+    outcome = step.outcome(result)
+
+    assert result.returncode == 0
+    assert calls["download"] == 0
+    assert outcome.status == "current"
+    assert outcome.detail is None

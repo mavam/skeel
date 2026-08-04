@@ -166,7 +166,12 @@ async def ensure_minimum_gh_version(runner: ProcessRunner) -> None:
         )
 
 
-def install_steps(source: SourceSpec, options: GhOptions) -> list[SkillStep]:
+def install_steps(
+    source: SourceSpec,
+    options: GhOptions,
+    *,
+    current: Sequence[InstalledSkill] = (),
+) -> list[SkillStep]:
     steps: list[SkillStep] = []
     skills: tuple[SkillSpec | None, ...] = (None,) if source.install_all else source.skills
     fast_session = FastInstallSession(source.source)
@@ -193,9 +198,33 @@ def install_steps(source: SourceSpec, options: GhOptions) -> list[SkillStep]:
                 skill=skill,
                 options=options,
                 command=command,
+                immutable_inventory=immutable_source_inventory(current),
             )
         steps.append(SkillStep(label=label, command=command, executor=executor))
     return steps
+
+
+def immutable_source_inventory(
+    installed: Sequence[InstalledSkill],
+) -> dict[str, str] | None:
+    if not installed:
+        return None
+    inventory = {
+        skill.provenance.path: skill.provenance.tree_sha
+        for skill in installed
+        if skill.provenance.path and skill.provenance.tree_sha
+    }
+    return inventory if len(inventory) == len(installed) else None
+
+
+async def immutable_source_is_current(
+    session: FastInstallSession,
+    pin: str,
+    inventory: dict[str, str],
+) -> bool:
+    import asyncio
+
+    return await asyncio.to_thread(session.immutable_tree_is_current, pin, inventory)
 
 
 def fast_install_executor(
@@ -205,11 +234,19 @@ def fast_install_executor(
     skill: SkillSpec | None,
     options: GhOptions,
     command: Command,
+    immutable_inventory: dict[str, str] | None = None,
 ) -> StepExecutor:
     async def execute() -> ProcessResult:
         import asyncio
 
         try:
+            pin = source.pin if skill is None else None
+            if (
+                pin
+                and immutable_inventory
+                and await immutable_source_is_current(session, pin, immutable_inventory)
+            ):
+                return ProcessResult(command=command, returncode=0)
             await asyncio.to_thread(session.install, source, skill, options.directory)
         except FastInstallError as error:
             return ProcessResult(command=command, returncode=1, stderr=str(error))
@@ -316,20 +353,40 @@ def update_steps(
     *,
     manifest: Manifest,
 ) -> list[SkillStep]:
+    # Import locally to avoid the gh -> reconcile -> gh module cycle. This keeps
+    # dynamic-source attribution consistent with apply, diff, and list.
+    from .reconcile import matching_dynamic_source_skills
+
     labels = desired_labels(manifest)
     specs = desired_install_specs(manifest)
     sessions: dict[str, FastInstallSession] = {}
     repair_unknown_paths = dynamic_repair_unknown_paths(installed, manifest)
-    steps = install_all_repair_steps(
-        installed,
-        manifest,
-        options,
-        repair_unknown_paths=repair_unknown_paths,
-    )
-    if not steps:
-        repair_unknown_paths = set()
+    excluded_paths: set[Path] = set()
+    steps: list[SkillStep] = []
+
+    # Refresh install-all entries once at source level so the installer can
+    # discover skills that were added upstream since the previous install.
+    for source in manifest.sources:
+        if not source.install_all:
+            continue
+        attributed = list(matching_dynamic_source_skills(source, installed))
+        if not any(installed_source_matches(skill, source) for skill in installed):
+            attributed.extend(skill for skill in installed if skill.path in repair_unknown_paths)
+            excluded_paths.update(repair_unknown_paths)
+        attributed = list(unique_installed_skills(attributed))
+        excluded_paths.update(skill.path for skill in attributed)
+
+        step = install_steps(source, options, current=attributed)[0]
+        steps.append(
+            replace(
+                step,
+                outcome=source_update_outcome(source, attributed, options),
+            )
+        )
+
+    # Explicit entries retain their per-skill update and repair behavior.
     for skill in sorted(installed, key=lambda skill: skill.name):
-        if skill.path in repair_unknown_paths:
+        if skill.path in excluded_paths:
             continue
         label = labels.get(skill.name, labels.get(skill.basename, skill.label))
         if match := matching_desired_install(skill, specs):
@@ -375,6 +432,19 @@ def update_steps(
     return steps
 
 
+def unique_installed_skills(
+    skills: Sequence[InstalledSkill],
+) -> tuple[InstalledSkill, ...]:
+    unique: list[InstalledSkill] = []
+    seen: set[Path] = set()
+    for skill in skills:
+        if skill.path in seen:
+            continue
+        seen.add(skill.path)
+        unique.append(skill)
+    return tuple(unique)
+
+
 def install_step_for_skill(
     source: SourceSpec,
     skill: SkillSpec,
@@ -394,32 +464,6 @@ def dynamic_repair_unknown_paths(
         for skill in installed
         if not skill.github_source and matching_desired_install(skill, specs) is None
     }
-
-
-def install_all_repair_steps(
-    installed: Sequence[InstalledSkill],
-    manifest: Manifest,
-    options: GhOptions,
-    *,
-    repair_unknown_paths: set[Path],
-) -> list[SkillStep]:
-    if not repair_unknown_paths:
-        return []
-
-    steps: list[SkillStep] = []
-    for source in manifest.sources:
-        if not source.install_all or not source_requires_github_metadata(source):
-            continue
-        if any(installed_source_matches(skill, source) for skill in installed):
-            continue
-        for step in install_steps(source, options):
-            steps.append(replace(step, outcome=reinstall_outcome))
-    return steps
-
-
-def reinstall_outcome(result: ProcessResult) -> StepOutcome:
-    del result
-    return StepOutcome(status="updated")
 
 
 def update_output(result: ProcessResult) -> str:
@@ -461,6 +505,95 @@ def fast_update_outcome(skill: InstalledSkill) -> OutcomeFactory:
         return StepOutcome(status=status, detail=version_transition(before, after))
 
     return outcome
+
+
+def source_update_outcome(
+    source: SourceSpec,
+    installed: Sequence[InstalledSkill],
+    options: GhOptions,
+) -> OutcomeFactory:
+    before = {skill.path: read_skill_provenance(skill.path) for skill in installed}
+    known_paths = set(before)
+
+    def outcome(result: ProcessResult) -> StepOutcome:
+        del result
+        after = scan_source_inventory(source, options, known_paths=known_paths)
+        return classify_source_inventory_change(before, after)
+
+    return outcome
+
+
+def scan_source_inventory(
+    source: SourceSpec,
+    options: GhOptions,
+    *,
+    known_paths: set[Path] | None = None,
+) -> dict[Path, SkillProvenance]:
+    known_paths = known_paths or set()
+    candidates = set(known_paths)
+    try:
+        candidates.update(
+            path
+            for path in options.directory.iterdir()
+            if path.is_dir() and (path / "SKILL.md").is_file()
+        )
+    except OSError:
+        pass
+
+    inventory: dict[Path, SkillProvenance] = {}
+    for path in candidates:
+        if not path.exists():
+            continue
+        provenance = read_skill_provenance(path)
+        if path in known_paths or provenance.source == source.source:
+            inventory[path] = provenance
+    return inventory
+
+
+def classify_source_inventory_change(
+    before: Mapping[Path, SkillProvenance],
+    after: Mapping[Path, SkillProvenance],
+) -> StepOutcome:
+    added = set(after) - set(before)
+    removed = set(before) - set(after)
+    changed = {
+        path
+        for path in set(before) & set(after)
+        if before[path].version_label != after[path].version_label
+    }
+    if not added and not removed and not changed:
+        return StepOutcome(status="current")
+
+    detail = source_inventory_change_detail(before, after, added, removed, changed)
+    return StepOutcome(status="updated", detail=detail)
+
+
+def source_inventory_change_detail(
+    before: Mapping[Path, SkillProvenance],
+    after: Mapping[Path, SkillProvenance],
+    added: set[Path],
+    removed: set[Path],
+    changed: set[Path],
+) -> str:
+    if changed and not added and not removed:
+        transitions = {
+            transition
+            for path in changed
+            if (transition := version_transition(before[path], after[path])) is not None
+        }
+        if len(transitions) == 1:
+            return next(iter(transitions))
+        return f"{len(changed)} changed"
+    if added and not removed and not changed:
+        return skill_count_detail(len(added), prefix="+")
+    if removed and not added and not changed:
+        return skill_count_detail(len(removed), prefix="-")
+    return f"{len(added) + len(removed) + len(changed)} changed"
+
+
+def skill_count_detail(count: int, *, prefix: str) -> str:
+    noun = "skill" if count == 1 else "skills"
+    return f"{prefix}{count} {noun}"
 
 
 def version_transition(before: SkillProvenance, after: SkillProvenance) -> str | None:

@@ -1165,6 +1165,8 @@ async def command_update(command: UpdateOptions) -> int:
             inventory.installed,
             selector,
         )
+        # Plan each scope independently: project and user manifests target
+        # different directories, so the same source must refresh in both.
         steps.extend(
             scoped_steps(
                 update_steps(
