@@ -880,3 +880,49 @@ def test_immutable_install_all_refresh_discovers_missing_remote_skill(
     assert read_skill_provenance(tmp_path / "skill-beta").tree_sha == "new123456789"
     assert outcome.status == "updated"
     assert outcome.detail == "+1 skill"
+
+
+def test_pinned_install_all_refresh_reports_pruned_skill(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("skeel.fast_install.Path.home", lambda: tmp_path / "home")
+    installed = [
+        dynamic_skill(tmp_path, "skill-alpha"),
+        dynamic_skill(tmp_path, "skill-beta"),
+    ]
+    source = dynamic_manifest(pin="main").sources[0]
+    manifest = Manifest(path=Path("manifest.yaml"), sources=(source,))
+    archive_root = tmp_path / "archive"
+    write_skill(
+        archive_root / "skills" / "skill-alpha",
+        "---\nname: skill-alpha\n---\n# Skill Alpha",
+    )
+
+    monkeypatch.setattr(
+        "skeel.fast_install.resolve_ref",
+        lambda source, pin: ResolvedRef(ref="refs/heads/main", commit_sha="commit-new"),
+    )
+    monkeypatch.setattr(
+        "skeel.fast_install.download_archive",
+        lambda source, commit_sha, directory: archive_root,
+    )
+    monkeypatch.setattr(
+        "skeel.fast_install.fetch_repository_tree",
+        lambda source, sha: RepositoryTree(
+            directory_shas={"skills/skill-alpha": "old123456789"},
+            skill_paths=frozenset({"skills/skill-alpha"}),
+            complete=True,
+        ),
+    )
+    step = update_steps(installed, GhOptions(directory=tmp_path), manifest=manifest)[0]
+    assert step.executor is not None
+    assert step.outcome is not None
+
+    result = asyncio.run(step.executor())
+    outcome = step.outcome(result)
+
+    assert result.returncode == 0
+    assert not (tmp_path / "skill-beta").exists()
+    assert outcome.status == "updated"
+    assert outcome.detail == "-1 skill"

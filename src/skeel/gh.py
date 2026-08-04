@@ -171,6 +171,7 @@ def install_steps(
     options: GhOptions,
     *,
     current: Sequence[InstalledSkill] = (),
+    prune: bool = False,
 ) -> list[SkillStep]:
     steps: list[SkillStep] = []
     skills: tuple[SkillSpec | None, ...] = (None,) if source.install_all else source.skills
@@ -200,6 +201,7 @@ def install_steps(
                 options=options,
                 command=command,
                 immutable_inventory=immutable_inventory,
+                prune=prune,
             )
         steps.append(SkillStep(label=label, command=command, executor=executor))
     return steps
@@ -236,6 +238,7 @@ def fast_install_executor(
     options: GhOptions,
     command: Command,
     immutable_inventory: dict[str, tuple[str, str]] | None = None,
+    prune: bool = False,
 ) -> StepExecutor:
     async def execute() -> ProcessResult:
         import asyncio
@@ -248,7 +251,13 @@ def fast_install_executor(
                 and await immutable_source_is_current(session, pin, immutable_inventory)
             ):
                 return ProcessResult(command=command, returncode=0)
-            await asyncio.to_thread(session.install, source, skill, options.directory)
+            await asyncio.to_thread(
+                session.install,
+                source,
+                skill,
+                options.directory,
+                prune=prune,
+            )
         except FastInstallError as error:
             return ProcessResult(command=command, returncode=1, stderr=str(error))
         return ProcessResult(command=command, returncode=0)
@@ -377,7 +386,7 @@ def update_steps(
         attributed = list(unique_installed_skills(attributed))
         excluded_paths.update(skill.path for skill in attributed)
 
-        step = install_steps(source, options, current=attributed)[0]
+        step = install_steps(source, options, current=attributed, prune=True)[0]
         steps.append(
             replace(
                 step,
@@ -584,12 +593,15 @@ def source_inventory_change_detail(
         }
         if len(transitions) == 1:
             return next(iter(transitions))
-        return f"{len(changed)} changed"
-    if added and not removed and not changed:
-        return skill_count_detail(len(added), prefix="+")
-    if removed and not added and not changed:
-        return skill_count_detail(len(removed), prefix="-")
-    return f"{len(added) + len(removed) + len(changed)} changed"
+
+    details: list[str] = []
+    if added:
+        details.append(skill_count_detail(len(added), prefix="+"))
+    if removed:
+        details.append(skill_count_detail(len(removed), prefix="-"))
+    if changed:
+        details.append(f"{len(changed)} changed")
+    return ", ".join(details)
 
 
 def skill_count_detail(count: int, *, prefix: str) -> str:

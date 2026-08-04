@@ -306,3 +306,171 @@ def test_pinned_install_all_refresh_discovers_new_skill(
     lockfile = json.loads((home / ".agents" / ".skill-lock.json").read_text())
     assert sorted(lockfile["skills"]) == ["skill-a", "skill-b", "skill-c"]
     assert all(lockfile["skills"][name]["skillFolderHash"] == f"new-{name}" for name in discovered)
+
+
+def test_pinned_install_all_prunes_only_owned_removed_skills(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "home"
+    source_root = tmp_path / "source"
+    target = tmp_path / "target"
+    monkeypatch.setattr("skeel.fast_install.Path.home", lambda: home)
+
+    remote_dir = source_root / "skills" / "skill-alpha"
+    remote_dir.mkdir(parents=True)
+    (remote_dir / "SKILL.md").write_text("---\nname: skill-alpha\n---\n# Skill Alpha\n")
+    remote_skill = DiscoveredSkill(
+        name="skill-alpha",
+        path="skills/skill-alpha",
+        directory=remote_dir,
+    )
+    removed_dir = tmp_path / "fixtures" / "skill-beta"
+    removed_dir.mkdir(parents=True)
+    (removed_dir / "SKILL.md").write_text("---\nname: skill-beta\n---\n# Skill Beta\n")
+    removed_skill = DiscoveredSkill(
+        name="skill-beta",
+        path="skills/skill-beta",
+        directory=removed_dir,
+    )
+    other_dir = tmp_path / "fixtures" / "skill-other"
+    other_dir.mkdir(parents=True)
+    (other_dir / "SKILL.md").write_text("---\nname: skill-other\n---\n# Other\n")
+    other_skill = DiscoveredSkill(
+        name="skill-other",
+        path="skills/skill-other",
+        directory=other_dir,
+    )
+
+    install_skill(
+        source="example/skill-catalog",
+        pin="main",
+        ref="refs/heads/main",
+        tree_sha="tree-alpha",
+        skill=remote_skill,
+        directory=target,
+    )
+    install_skill(
+        source="example/skill-catalog",
+        pin="main",
+        ref="refs/heads/main",
+        tree_sha="tree-beta",
+        skill=removed_skill,
+        directory=target,
+    )
+    install_skill(
+        source="example/other-catalog",
+        pin="main",
+        ref="refs/heads/main",
+        tree_sha="tree-other",
+        skill=other_skill,
+        directory=target,
+    )
+    metadata_less = target / "metadata-less"
+    metadata_less.mkdir()
+    (metadata_less / "SKILL.md").write_text("---\nname: metadata-less\n---\n# Metadata Less\n")
+    missing_path = target / "missing-path"
+    missing_path.mkdir()
+    (missing_path / "SKILL.md").write_text(
+        """---
+metadata:
+  github-repo: https://github.com/example/skill-catalog
+  github-ref: refs/heads/main
+  github-tree-sha: tree-missing
+name: missing-path
+---
+# Missing Path
+"""
+    )
+
+    monkeypatch.setattr(
+        "skeel.fast_install.resolve_ref",
+        lambda source, pin: ResolvedRef(ref="refs/heads/main", commit_sha="commit-new"),
+    )
+    monkeypatch.setattr(
+        "skeel.fast_install.download_archive",
+        lambda source, commit_sha, directory: source_root,
+    )
+    monkeypatch.setattr(
+        "skeel.fast_install.fetch_repository_tree",
+        lambda source, commit_sha: RepositoryTree(
+            directory_shas={"skills/skill-alpha": "tree-alpha"},
+            skill_paths=frozenset({"skills/skill-alpha"}),
+            complete=True,
+        ),
+    )
+    source = SourceSpec(
+        source="example/skill-catalog",
+        skills=(),
+        install_all=True,
+        pin="main",
+    )
+
+    removed = FastInstallSession(source.source).install(
+        source,
+        None,
+        target,
+        prune=True,
+    )
+
+    assert removed == (target / "skill-beta",)
+    assert sorted(path.name for path in target.iterdir()) == [
+        "metadata-less",
+        "missing-path",
+        "skill-alpha",
+        "skill-other",
+    ]
+    lockfile = json.loads((home / ".agents" / ".skill-lock.json").read_text())
+    assert sorted(lockfile["skills"]) == ["skill-alpha", "skill-other"]
+
+
+def test_pinned_install_all_keeps_removed_skills_without_prune(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("skeel.fast_install.Path.home", lambda: tmp_path / "home")
+    source_root = tmp_path / "source"
+    remote_dir = source_root / "skills" / "skill-alpha"
+    remote_dir.mkdir(parents=True)
+    (remote_dir / "SKILL.md").write_text("---\nname: skill-alpha\n---\n# Skill Alpha\n")
+    target = tmp_path / "target"
+    stale_dir = target / "skill-beta"
+    stale_dir.mkdir(parents=True)
+    (stale_dir / "SKILL.md").write_text(
+        """---
+metadata:
+  github-repo: https://github.com/example/skill-catalog
+  github-ref: refs/heads/main
+  github-tree-sha: tree-beta
+  github-path: skills/skill-beta
+name: skill-beta
+---
+# Skill Beta
+"""
+    )
+    monkeypatch.setattr(
+        "skeel.fast_install.resolve_ref",
+        lambda source, pin: ResolvedRef(ref="refs/heads/main", commit_sha="commit-new"),
+    )
+    monkeypatch.setattr(
+        "skeel.fast_install.download_archive",
+        lambda source, commit_sha, directory: source_root,
+    )
+    monkeypatch.setattr(
+        "skeel.fast_install.fetch_repository_tree",
+        lambda source, commit_sha: RepositoryTree(
+            directory_shas={"skills/skill-alpha": "tree-alpha"},
+            skill_paths=frozenset({"skills/skill-alpha"}),
+            complete=True,
+        ),
+    )
+    source = SourceSpec(
+        source="example/skill-catalog",
+        skills=(),
+        install_all=True,
+        pin="main",
+    )
+
+    FastInstallSession(source.source).install(source, None, target)
+
+    assert stale_dir.exists()
