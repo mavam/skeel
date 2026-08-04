@@ -24,4 +24,4 @@ skeel -g update
 
 Explicit skill entries continue to update independently, and a source-and-skill selector remains targeted to that skill. Immutable tag and commit pins report `current` when their content is unchanged.
 
-Updates of pinned install-all sources also prune skills removed upstream. Skeel only removes directories with provenance that identifies the source and upstream skill path, leaving metadata-less and ambiguously owned directories untouched.
+Updates of pinned install-all sources also prune skills removed upstream. Skeel only removes a directory when its `github-repo` matches the source exactly and its `github-path` is absent upstream, leaving metadata-less, malformed, and differently owned directories untouched. Dry runs preview each removal.

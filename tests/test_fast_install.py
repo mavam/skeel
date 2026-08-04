@@ -15,6 +15,8 @@ from skeel.fast_install import (
     ResolvedRef,
     fetch_repository_tree,
     install_skill,
+    prune_removed_skills,
+    remove_lockfile_skill,
     select_skill,
 )
 from skeel.gh import GhOptions, InstalledSkill, read_skill_provenance, update_steps
@@ -69,6 +71,9 @@ description: ASIM reference
     assert lockfile["skills"]["tenzir-asim"]["skillPath"] == "skills/tenzir-asim/SKILL.md"
     assert lockfile["skills"]["tenzir-asim"]["skillFolderHash"] == "tree123"
     assert lockfile["skills"]["tenzir-asim"]["pinnedRef"] == "main"
+    assert lockfile["skills"]["tenzir-asim"]["installPath"] == str(
+        (tmp_path / "target" / "tenzir-asim").resolve()
+    )
 
 
 def test_select_skill_matches_hidden_and_namespaced_paths(tmp_path: Path) -> None:
@@ -366,6 +371,21 @@ def test_pinned_install_all_prunes_only_owned_removed_skills(
         skill=other_skill,
         directory=target,
     )
+    removed_skill_md = target / "skill-beta" / "SKILL.md"
+    removed_skill_md.write_text(
+        removed_skill_md.read_text().replace(
+            "https://github.com/example/skill-catalog",
+            "https://github.com/example/skill-catalog.git",
+        )
+    )
+    linked = target / "linked-skill"
+    linked.symlink_to(other_dir, target_is_directory=True)
+    malformed = target / "malformed"
+    malformed.mkdir()
+    (malformed / "SKILL.md").write_text("---\nname: [oops\n---\n# Malformed\n")
+    non_utf8 = target / "non-utf8"
+    non_utf8.mkdir()
+    (non_utf8 / "SKILL.md").write_bytes(b"---\nname: \xff\n---\n")
     metadata_less = target / "metadata-less"
     metadata_less.mkdir()
     (metadata_less / "SKILL.md").write_text("---\nname: metadata-less\n---\n# Metadata Less\n")
@@ -406,17 +426,21 @@ name: missing-path
         pin="main",
     )
 
-    removed = FastInstallSession(source.source).install(
+    result = FastInstallSession(source.source).install(
         source,
         None,
         target,
         prune=True,
     )
 
-    assert removed == (target / "skill-beta",)
+    assert result.removed_paths == (target / "skill-beta",)
+    assert result.warnings == ()
     assert sorted(path.name for path in target.iterdir()) == [
+        "linked-skill",
+        "malformed",
         "metadata-less",
         "missing-path",
+        "non-utf8",
         "skill-alpha",
         "skill-other",
     ]
@@ -474,3 +498,126 @@ name: skill-beta
     FastInstallSession(source.source).install(source, None, target)
 
     assert stale_dir.exists()
+
+
+def test_incomplete_repository_tree_disables_pruning(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("skeel.fast_install.Path.home", lambda: tmp_path / "home")
+    source_root = tmp_path / "source"
+    remote_dir = source_root / "skills" / "skill-alpha"
+    remote_dir.mkdir(parents=True)
+    (remote_dir / "SKILL.md").write_text("---\nname: skill-alpha\n---\n# Skill Alpha\n")
+    target = tmp_path / "target"
+    stale_dir = target / "skill-beta"
+    stale_dir.mkdir(parents=True)
+    (stale_dir / "SKILL.md").write_text(
+        """---
+metadata:
+  github-repo: https://github.com/example/skill-catalog
+  github-ref: refs/heads/main
+  github-tree-sha: tree-beta
+  github-path: skills/skill-beta
+name: skill-beta
+---
+# Skill Beta
+"""
+    )
+    monkeypatch.setattr(
+        "skeel.fast_install.resolve_ref",
+        lambda source, pin: ResolvedRef(ref="refs/heads/main", commit_sha="commit-new"),
+    )
+    monkeypatch.setattr(
+        "skeel.fast_install.download_archive",
+        lambda source, commit_sha, directory: source_root,
+    )
+    monkeypatch.setattr(
+        "skeel.fast_install.fetch_repository_tree",
+        lambda source, commit_sha: RepositoryTree(
+            directory_shas={"skills/skill-alpha": "tree-alpha"},
+            skill_paths=frozenset({"skills/skill-alpha"}),
+            complete=False,
+        ),
+    )
+    source = SourceSpec(
+        source="example/skill-catalog",
+        skills=(),
+        install_all=True,
+        pin="main",
+    )
+
+    result = FastInstallSession(source.source).install(source, None, target, prune=True)
+
+    assert result.removed_paths == ()
+    assert stale_dir.exists()
+
+
+def test_prune_failure_returns_warning(tmp_path: Path, monkeypatch) -> None:
+    target = tmp_path / "target"
+    stale_dir = target / "skill-beta"
+    stale_dir.mkdir(parents=True)
+    (stale_dir / "SKILL.md").write_text(
+        """---
+metadata:
+  github-repo: https://github.com/example/skill-catalog
+  github-path: skills/skill-beta
+name: skill-beta
+---
+# Skill Beta
+"""
+    )
+
+    def fail_remove(path: Path) -> None:
+        raise PermissionError("permission denied")
+
+    monkeypatch.setattr("skeel.fast_install.shutil.rmtree", fail_remove)
+
+    result = prune_removed_skills(
+        source="example/skill-catalog",
+        remote_skill_paths=frozenset(),
+        directory=target,
+    )
+
+    assert result.removed_paths == ()
+    assert len(result.warnings) == 1
+    assert "permission denied" in result.warnings[0]
+    assert stale_dir.exists()
+
+
+def test_lockfile_removal_requires_matching_install_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setattr("skeel.fast_install.Path.home", lambda: home)
+    lockfile_path = home / ".agents" / ".skill-lock.json"
+    lockfile_path.parent.mkdir(parents=True)
+    user_path = home / ".agents" / "skills" / "skill-alpha"
+    lockfile_path.write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "skills": {
+                    "skill-alpha": {
+                        "source": "example/skill-catalog",
+                        "installPath": str(user_path.resolve()),
+                    }
+                },
+            }
+        )
+    )
+
+    remove_lockfile_skill(
+        skill_name="skill-alpha",
+        source="example/skill-catalog",
+        install_path=tmp_path / "project" / ".agents" / "skills" / "skill-alpha",
+    )
+    assert "skill-alpha" in json.loads(lockfile_path.read_text())["skills"]
+
+    remove_lockfile_skill(
+        skill_name="skill-alpha",
+        source="example/skill-catalog",
+        install_path=user_path,
+    )
+    assert json.loads(lockfile_path.read_text())["skills"] == {}

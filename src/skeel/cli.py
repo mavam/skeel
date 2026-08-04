@@ -26,6 +26,7 @@ from .gh import (
     InstalledSkill,
     SkillStep,
     installed_skills,
+    pinned_prune_preview_steps,
     scoped_steps,
     source_skill_label,
     update_steps,
@@ -1167,16 +1168,20 @@ async def command_update(command: UpdateOptions) -> int:
         )
         # Plan each scope independently: project and user manifests target
         # different directories, so the same source must refresh in both.
-        steps.extend(
-            scoped_steps(
-                update_steps(
-                    installed,
-                    inventory.runtime.options,
-                    manifest=manifest,
-                ),
-                inventory.scope,
-            )
+        plan = update_steps(
+            installed,
+            inventory.runtime.options,
+            manifest=manifest,
         )
+        if command.dry_run:
+            plan.extend(
+                await asyncio.to_thread(
+                    pinned_prune_preview_steps,
+                    manifest,
+                    inventory.runtime.options,
+                )
+            )
+        steps.extend(scoped_steps(plan, inventory.scope))
 
     if selector is not None and not steps:
         if not selector_matches_effective_manifest and shadowed.warnings:
