@@ -8,7 +8,7 @@ import tempfile
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import yaml
@@ -29,6 +29,13 @@ class DiscoveredSkill:
     directory: Path
 
 
+@dataclass(frozen=True)
+class RepositoryTree:
+    directory_shas: dict[str, str]
+    skill_paths: frozenset[str]
+    complete: bool
+
+
 class FastInstallError(RuntimeError):
     pass
 
@@ -41,7 +48,7 @@ class FastInstallSession:
         self.source = source
         self._archives: dict[str, tuple[tempfile.TemporaryDirectory[str], Path, ResolvedRef]] = {}
         self._resolved_refs: dict[str, ResolvedRef] = {}
-        self._tree_shas: dict[str, dict[str, str]] = {}
+        self._repository_trees: dict[str, RepositoryTree] = {}
         self._skills: dict[str, tuple[DiscoveredSkill, ...]] = {}
         self._lock = threading.RLock()
 
@@ -56,11 +63,11 @@ class FastInstallSession:
             raise FastInstallError("fast install requires an explicit pin")
 
         _, root, resolved = self._source_archive(pin)
-        tree_shas = self._source_tree_shas(resolved.commit_sha)
+        repository_tree = self._source_repository_tree(resolved.commit_sha)
         skills = self._source_skills(root)
         selected = skills if skill is None else (select_skill(skills, skill, source=source.source),)
         for selected_skill in selected:
-            tree_sha = tree_shas.get(selected_skill.path)
+            tree_sha = repository_tree.directory_shas.get(selected_skill.path)
             if not tree_sha:
                 raise FastInstallError(f"could not resolve tree SHA for {selected_skill.path}")
             install_skill(
@@ -75,16 +82,22 @@ class FastInstallSession:
     def immutable_tree_is_current(
         self,
         pin: str,
-        installed_tree_shas: dict[str, str],
+        installed_inventory: dict[str, tuple[str, str]],
     ) -> bool:
-        if not installed_tree_shas:
+        if not installed_inventory:
             return False
         resolved = self._resolve_ref(pin)
         if resolved.ref.startswith("refs/heads/"):
             return False
-        remote_tree_shas = self._source_tree_shas(resolved.commit_sha)
+        if any(ref != resolved.ref for ref, _ in installed_inventory.values()):
+            return False
+
+        remote_tree = self._source_repository_tree(resolved.commit_sha)
+        if not remote_tree.complete or remote_tree.skill_paths != installed_inventory.keys():
+            return False
         return all(
-            remote_tree_shas.get(path) == tree_sha for path, tree_sha in installed_tree_shas.items()
+            remote_tree.directory_shas.get(path) == tree_sha
+            for path, (_, tree_sha) in installed_inventory.items()
         )
 
     def _resolve_ref(self, pin: str) -> ResolvedRef:
@@ -106,12 +119,14 @@ class FastInstallSession:
             self._archives[pin] = (tempdir, root, resolved)
             return self._archives[pin]
 
-    def _source_tree_shas(self, commit_sha: str) -> dict[str, str]:
+    def _source_repository_tree(self, commit_sha: str) -> RepositoryTree:
         with self._lock:
-            if commit_sha in self._tree_shas:
-                return self._tree_shas[commit_sha]
-            self._tree_shas[commit_sha] = fetch_tree_shas(self.source, commit_sha)
-            return self._tree_shas[commit_sha]
+            if commit_sha not in self._repository_trees:
+                self._repository_trees[commit_sha] = fetch_repository_tree(
+                    self.source,
+                    commit_sha,
+                )
+            return self._repository_trees[commit_sha]
 
     def _source_skills(self, root: Path) -> tuple[DiscoveredSkill, ...]:
         key = str(root)
@@ -181,22 +196,32 @@ def resolve_commit(source: str, ref: str) -> str:
     return sha
 
 
-def fetch_tree_shas(source: str, commit_sha: str) -> dict[str, str]:
+def fetch_repository_tree(source: str, commit_sha: str) -> RepositoryTree:
     result = gh_api_json(f"repos/{source}/git/trees/{commit_sha}?recursive=1")
     assert result is not None
     tree = result.get("tree")
     if not isinstance(tree, list):
         raise FastInstallError(f"could not read repository tree for {source}@{commit_sha}")
 
-    shas: dict[str, str] = {}
+    directory_shas: dict[str, str] = {}
+    skill_paths: set[str] = set()
     for entry in tree:
-        if not isinstance(entry, dict) or entry.get("type") != "tree":
+        if not isinstance(entry, dict):
             continue
         path = value_as_str(entry.get("path"))
-        sha = value_as_str(entry.get("sha"))
-        if path and sha:
-            shas[path] = sha
-    return shas
+        if not path:
+            continue
+        if entry.get("type") == "tree":
+            sha = value_as_str(entry.get("sha"))
+            if sha:
+                directory_shas[path] = sha
+        elif entry.get("type") == "blob" and PurePosixPath(path).name == "SKILL.md":
+            skill_paths.add(PurePosixPath(path).parent.as_posix())
+    return RepositoryTree(
+        directory_shas=directory_shas,
+        skill_paths=frozenset(skill_paths),
+        complete=result.get("truncated") is not True,
+    )
 
 
 def download_archive(source: str, commit_sha: str, directory: Path) -> Path:

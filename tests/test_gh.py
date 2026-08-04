@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from skeel.fast_install import ResolvedRef
+from skeel.fast_install import RepositoryTree, ResolvedRef
 from skeel.gh import (
     GhOptions,
     InstalledSkill,
@@ -524,15 +524,21 @@ def test_scoped_steps_stamps_scope_onto_every_step() -> None:
     assert [step.scope for step in scoped_steps(steps, None)] == [None, None]
 
 
-def dynamic_skill(tmp_path: Path, name: str, *, sha: str = "old123456789") -> InstalledSkill:
+def dynamic_skill(
+    tmp_path: Path,
+    name: str,
+    *,
+    ref: str = "refs/heads/main",
+    sha: str = "old123456789",
+) -> InstalledSkill:
     path = tmp_path / name
     write_skill(
         path,
         f"""
 ---
 metadata:
-  github-ref: refs/heads/main
-  github-repo: https://github.com/mavam/skills
+  github-ref: {ref}
+  github-repo: https://github.com/example/skill-catalog
   github-tree-sha: {sha}
   github-path: skills/{name}
 name: {name}
@@ -552,7 +558,7 @@ def dynamic_manifest(*, pin: str | None = None) -> Manifest:
         path=Path("manifest.yaml"),
         sources=(
             SourceSpec(
-                source="mavam/skills",
+                source="example/skill-catalog",
                 skills=(),
                 install_all=True,
                 pin=pin,
@@ -562,17 +568,17 @@ def dynamic_manifest(*, pin: str | None = None) -> Manifest:
 
 
 def test_update_steps_refresh_unpinned_dynamic_source_once(tmp_path: Path) -> None:
-    installed = [dynamic_skill(tmp_path, "code-review"), dynamic_skill(tmp_path, "mavam")]
+    installed = [dynamic_skill(tmp_path, "skill-alpha"), dynamic_skill(tmp_path, "skill-beta")]
 
     steps = update_steps(installed, GhOptions(directory=tmp_path), manifest=dynamic_manifest())
 
     assert len(steps) == 1
-    assert steps[0].label == "mavam/skills@*"
+    assert steps[0].label == "example/skill-catalog@*"
     assert steps[0].command == [
         "gh",
         "skill",
         "install",
-        "mavam/skills",
+        "example/skill-catalog",
         "--all",
         "--allow-hidden-dirs",
         "--dir",
@@ -582,7 +588,7 @@ def test_update_steps_refresh_unpinned_dynamic_source_once(tmp_path: Path) -> No
 
 
 def test_update_steps_refresh_branch_pinned_dynamic_source_once(tmp_path: Path) -> None:
-    installed = [dynamic_skill(tmp_path, "code-review"), dynamic_skill(tmp_path, "mavam")]
+    installed = [dynamic_skill(tmp_path, "skill-alpha"), dynamic_skill(tmp_path, "skill-beta")]
 
     steps = update_steps(
         installed,
@@ -591,34 +597,30 @@ def test_update_steps_refresh_branch_pinned_dynamic_source_once(tmp_path: Path) 
     )
 
     assert len(steps) == 1
-    assert steps[0].label == "mavam/skills@*"
-    assert steps[0].command == ["gh", "api", "repos/mavam/skills/tarball/main"]
+    assert steps[0].label == "example/skill-catalog@*"
+    assert steps[0].command == ["gh", "api", "repos/example/skill-catalog/tarball/main"]
     assert steps[0].executor is not None
 
 
 def test_update_steps_exclude_dynamic_skills_from_per_skill_updates(tmp_path: Path) -> None:
-    installed = [
-        dynamic_skill(tmp_path, "code-review"),
-        dynamic_skill(tmp_path, "mavam"),
-        InstalledSkill(name="local", path=tmp_path / "local"),
-    ]
+    installed = [dynamic_skill(tmp_path, "skill-alpha"), dynamic_skill(tmp_path, "skill-beta")]
 
     steps = update_steps(installed, GhOptions(directory=tmp_path), manifest=dynamic_manifest())
 
-    assert [step.label for step in steps] == ["mavam/skills@*", "local"]
-    assert steps[1].command[:4] == ["gh", "skill", "update", "local"]
+    assert [step.label for step in steps] == ["example/skill-catalog@*"]
+    assert all(step.command[:3] != ["gh", "skill", "update"] for step in steps)
 
 
 def test_update_steps_keep_explicit_sources_per_skill(tmp_path: Path) -> None:
-    installed = [dynamic_skill(tmp_path, "code-review"), dynamic_skill(tmp_path, "mavam")]
+    installed = [dynamic_skill(tmp_path, "skill-alpha"), dynamic_skill(tmp_path, "skill-beta")]
     manifest = Manifest(
         path=Path("manifest.yaml"),
         sources=(
             SourceSpec(
-                source="mavam/skills",
+                source="example/skill-catalog",
                 skills=(
-                    SkillSpec(spec="code-review", name="code-review"),
-                    SkillSpec(spec="mavam", name="mavam"),
+                    SkillSpec(spec="skill-alpha", name="skill-alpha"),
+                    SkillSpec(spec="skill-beta", name="skill-beta"),
                 ),
             ),
         ),
@@ -627,23 +629,23 @@ def test_update_steps_keep_explicit_sources_per_skill(tmp_path: Path) -> None:
     steps = update_steps(installed, GhOptions(directory=tmp_path), manifest=manifest)
 
     assert [step.label for step in steps] == [
-        "mavam/skills@code-review",
-        "mavam/skills@mavam",
+        "example/skill-catalog@skill-alpha",
+        "example/skill-catalog@skill-beta",
     ]
     assert all(step.command[:3] == ["gh", "skill", "update"] for step in steps)
 
 
 def test_dynamic_source_filtered_to_skill_uses_targeted_install(tmp_path: Path) -> None:
-    installed = [dynamic_skill(tmp_path, "code-review"), dynamic_skill(tmp_path, "mavam")]
-    source = filter_source(dynamic_manifest(pin="main").sources[0], "code-review")
+    installed = [dynamic_skill(tmp_path, "skill-alpha"), dynamic_skill(tmp_path, "skill-beta")]
+    source = filter_source(dynamic_manifest(pin="main").sources[0], "skill-alpha")
     assert source is not None
     manifest = Manifest(path=Path("manifest.yaml"), sources=(source,))
 
     steps = update_steps(installed[:1], GhOptions(directory=tmp_path), manifest=manifest)
 
     assert len(steps) == 1
-    assert steps[0].label == "mavam/skills@code-review"
-    assert steps[0].command == ["gh", "api", "repos/mavam/skills/tarball/main"]
+    assert steps[0].label == "example/skill-catalog@skill-alpha"
+    assert steps[0].command == ["gh", "api", "repos/example/skill-catalog/tarball/main"]
 
 
 def test_dynamic_source_missing_metadata_uses_unified_source_step(tmp_path: Path) -> None:
@@ -654,27 +656,72 @@ def test_dynamic_source_missing_metadata_uses_unified_source_step(tmp_path: Path
     steps = update_steps(installed, GhOptions(directory=tmp_path), manifest=dynamic_manifest())
 
     assert len(steps) == 1
-    assert steps[0].label == "mavam/skills@*"
-    assert steps[0].command[:5] == ["gh", "skill", "install", "mavam/skills", "--all"]
+    assert steps[0].label == "example/skill-catalog@*"
+    assert steps[0].command[:5] == [
+        "gh",
+        "skill",
+        "install",
+        "example/skill-catalog",
+        "--all",
+    ]
+
+
+def test_multiple_dynamic_sources_do_not_share_orphan_attribution(tmp_path: Path) -> None:
+    path = tmp_path / "metadata-repair"
+    write_skill(path, "---\nname: metadata-repair\n---\n# Metadata Repair")
+    installed = [InstalledSkill(name="metadata-repair", path=path)]
+    manifest = Manifest(
+        path=Path("manifest.yaml"),
+        sources=(
+            SourceSpec(source="example/catalog-a", skills=(), install_all=True),
+            SourceSpec(source="example/catalog-b", skills=(), install_all=True),
+        ),
+    )
+
+    steps = update_steps(installed, GhOptions(directory=tmp_path), manifest=manifest)
+    write_skill(
+        path,
+        """
+---
+metadata:
+  github-ref: refs/heads/main
+  github-repo: https://github.com/example/catalog-a
+  github-tree-sha: new123456789
+  github-path: skills/metadata-repair
+name: metadata-repair
+---
+# Metadata Repair
+""",
+    )
+
+    assert [step.label for step in steps] == [
+        "example/catalog-a@*",
+        "example/catalog-b@*",
+        "metadata-repair",
+    ]
+    assert steps[0].outcome is not None
+    assert steps[1].outcome is not None
+    assert steps[0].outcome(ProcessResult(command=[], returncode=0)).status == "updated"
+    assert steps[1].outcome(ProcessResult(command=[], returncode=0)).status == "current"
 
 
 def test_source_update_outcome_classifies_inventory_changes(tmp_path: Path) -> None:
     source = dynamic_manifest().sources[0]
-    skill = dynamic_skill(tmp_path, "code-review")
+    skill = dynamic_skill(tmp_path, "skill-alpha")
     options = GhOptions(directory=tmp_path)
 
     unchanged = source_update_outcome(source, [skill], options)
     assert unchanged(ProcessResult(command=[], returncode=0)).status == "current"
 
     changed = source_update_outcome(source, [skill], options)
-    dynamic_skill(tmp_path, "code-review", sha="new123456789")
+    dynamic_skill(tmp_path, "skill-alpha", sha="new123456789")
     changed_result = changed(ProcessResult(command=[], returncode=0))
     assert changed_result.status == "updated"
     assert changed_result.detail == "main@old1234 → main@new1234"
 
-    current_skill = dynamic_skill(tmp_path, "code-review", sha="new123456789")
+    current_skill = dynamic_skill(tmp_path, "skill-alpha", sha="new123456789")
     added = source_update_outcome(source, [current_skill], options)
-    dynamic_skill(tmp_path, "mavam", sha="other123456789")
+    dynamic_skill(tmp_path, "skill-beta", sha="other123456789")
     added_result = added(ProcessResult(command=[], returncode=0))
     assert added_result.status == "updated"
     assert added_result.detail == "+1 skill"
@@ -700,7 +747,7 @@ def test_immutable_dynamic_source_skips_unchanged_archive(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    skill = dynamic_skill(tmp_path, "code-review")
+    skill = dynamic_skill(tmp_path, "skill-alpha", ref="refs/tags/v1.0.0")
     source = dynamic_manifest(pin="v1.0.0").sources[0]
     manifest = Manifest(path=Path("manifest.yaml"), sources=(source,))
     calls = {"download": 0}
@@ -710,8 +757,12 @@ def test_immutable_dynamic_source_skips_unchanged_archive(
         lambda source, pin: ResolvedRef(ref="refs/tags/v1.0.0", commit_sha="commit123"),
     )
     monkeypatch.setattr(
-        "skeel.fast_install.fetch_tree_shas",
-        lambda source, sha: {"skills/code-review": "old123456789"},
+        "skeel.fast_install.fetch_repository_tree",
+        lambda source, sha: RepositoryTree(
+            directory_shas={"skills/skill-alpha": "old123456789"},
+            skill_paths=frozenset({"skills/skill-alpha"}),
+            complete=True,
+        ),
     )
 
     def unexpected_download(source: str, commit_sha: str, directory: Path) -> Path:
@@ -730,3 +781,102 @@ def test_immutable_dynamic_source_skips_unchanged_archive(
     assert calls["download"] == 0
     assert outcome.status == "current"
     assert outcome.detail is None
+
+
+def test_immutable_pin_bump_refreshes_identical_skill_tree(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("skeel.fast_install.Path.home", lambda: tmp_path / "home")
+    skill = dynamic_skill(tmp_path, "skill-alpha", ref="refs/tags/v1.0.0")
+    source = dynamic_manifest(pin="v1.0.1").sources[0]
+    manifest = Manifest(path=Path("manifest.yaml"), sources=(source,))
+    archive_root = tmp_path / "archive"
+    archive_skill = archive_root / "skills" / "skill-alpha"
+    write_skill(archive_skill, "---\nname: skill-alpha\n---\n# Skill Alpha")
+    downloads: list[str] = []
+
+    monkeypatch.setattr(
+        "skeel.fast_install.resolve_ref",
+        lambda source, pin: ResolvedRef(ref="refs/tags/v1.0.1", commit_sha="commit-new"),
+    )
+    monkeypatch.setattr(
+        "skeel.fast_install.fetch_repository_tree",
+        lambda source, sha: RepositoryTree(
+            directory_shas={"skills/skill-alpha": "old123456789"},
+            skill_paths=frozenset({"skills/skill-alpha"}),
+            complete=True,
+        ),
+    )
+
+    def download(source: str, commit_sha: str, directory: Path) -> Path:
+        downloads.append(commit_sha)
+        return archive_root
+
+    monkeypatch.setattr("skeel.fast_install.download_archive", download)
+    step = update_steps([skill], GhOptions(directory=tmp_path), manifest=manifest)[0]
+    assert step.executor is not None
+    assert step.outcome is not None
+
+    result = asyncio.run(step.executor())
+    outcome = step.outcome(result)
+
+    assert result.returncode == 0
+    assert downloads == ["commit-new"]
+    assert read_skill_provenance(skill.path).ref == "refs/tags/v1.0.1"
+    assert outcome.status == "updated"
+    assert outcome.detail == "v1.0.0@old1234 → v1.0.1@old1234"
+
+
+def test_immutable_install_all_refresh_discovers_missing_remote_skill(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("skeel.fast_install.Path.home", lambda: tmp_path / "home")
+    skill = dynamic_skill(tmp_path, "skill-alpha", ref="refs/tags/v1.0.0")
+    source = dynamic_manifest(pin="v1.0.0").sources[0]
+    manifest = Manifest(path=Path("manifest.yaml"), sources=(source,))
+    archive_root = tmp_path / "archive"
+    write_skill(
+        archive_root / "skills" / "skill-alpha",
+        "---\nname: skill-alpha\n---\n# Skill Alpha",
+    )
+    write_skill(
+        archive_root / "skills" / "skill-beta",
+        "---\nname: skill-beta\n---\n# Skill Beta",
+    )
+    downloads: list[str] = []
+
+    monkeypatch.setattr(
+        "skeel.fast_install.resolve_ref",
+        lambda source, pin: ResolvedRef(ref="refs/tags/v1.0.0", commit_sha="commit-old"),
+    )
+    monkeypatch.setattr(
+        "skeel.fast_install.fetch_repository_tree",
+        lambda source, sha: RepositoryTree(
+            directory_shas={
+                "skills/skill-alpha": "old123456789",
+                "skills/skill-beta": "new123456789",
+            },
+            skill_paths=frozenset({"skills/skill-alpha", "skills/skill-beta"}),
+            complete=True,
+        ),
+    )
+
+    def download(source: str, commit_sha: str, directory: Path) -> Path:
+        downloads.append(commit_sha)
+        return archive_root
+
+    monkeypatch.setattr("skeel.fast_install.download_archive", download)
+    step = update_steps([skill], GhOptions(directory=tmp_path), manifest=manifest)[0]
+    assert step.executor is not None
+    assert step.outcome is not None
+
+    result = asyncio.run(step.executor())
+    outcome = step.outcome(result)
+
+    assert result.returncode == 0
+    assert downloads == ["commit-old"]
+    assert read_skill_provenance(tmp_path / "skill-beta").tree_sha == "new123456789"
+    assert outcome.status == "updated"
+    assert outcome.detail == "+1 skill"

@@ -175,6 +175,7 @@ def install_steps(
     steps: list[SkillStep] = []
     skills: tuple[SkillSpec | None, ...] = (None,) if source.install_all else source.skills
     fast_session = FastInstallSession(source.source)
+    immutable_inventory = immutable_source_inventory(current)
     for skill in skills:
         command = ["gh", "skill", "install", source.source]
         label = skill_label(source.source, skill)
@@ -198,7 +199,7 @@ def install_steps(
                 skill=skill,
                 options=options,
                 command=command,
-                immutable_inventory=immutable_source_inventory(current),
+                immutable_inventory=immutable_inventory,
             )
         steps.append(SkillStep(label=label, command=command, executor=executor))
     return steps
@@ -206,13 +207,13 @@ def install_steps(
 
 def immutable_source_inventory(
     installed: Sequence[InstalledSkill],
-) -> dict[str, str] | None:
+) -> dict[str, tuple[str, str]] | None:
     if not installed:
         return None
     inventory = {
-        skill.provenance.path: skill.provenance.tree_sha
+        skill.provenance.path: (skill.provenance.ref, skill.provenance.tree_sha)
         for skill in installed
-        if skill.provenance.path and skill.provenance.tree_sha
+        if skill.provenance.path and skill.provenance.ref and skill.provenance.tree_sha
     }
     return inventory if len(inventory) == len(installed) else None
 
@@ -220,7 +221,7 @@ def immutable_source_inventory(
 async def immutable_source_is_current(
     session: FastInstallSession,
     pin: str,
-    inventory: dict[str, str],
+    inventory: dict[str, tuple[str, str]],
 ) -> bool:
     import asyncio
 
@@ -234,7 +235,7 @@ def fast_install_executor(
     skill: SkillSpec | None,
     options: GhOptions,
     command: Command,
-    immutable_inventory: dict[str, str] | None = None,
+    immutable_inventory: dict[str, tuple[str, str]] | None = None,
 ) -> StepExecutor:
     async def execute() -> ProcessResult:
         import asyncio
@@ -361,16 +362,16 @@ def update_steps(
     specs = desired_install_specs(manifest)
     sessions: dict[str, FastInstallSession] = {}
     repair_unknown_paths = dynamic_repair_unknown_paths(installed, manifest)
+    dynamic_sources = tuple(source for source in manifest.sources if source.install_all)
+    orphan_source = dynamic_sources[0] if len(dynamic_sources) == 1 else None
     excluded_paths: set[Path] = set()
     steps: list[SkillStep] = []
 
     # Refresh install-all entries once at source level so the installer can
     # discover skills that were added upstream since the previous install.
-    for source in manifest.sources:
-        if not source.install_all:
-            continue
+    for source in dynamic_sources:
         attributed = list(matching_dynamic_source_skills(source, installed))
-        if not any(installed_source_matches(skill, source) for skill in installed):
+        if source is orphan_source:
             attributed.extend(skill for skill in installed if skill.path in repair_unknown_paths)
             excluded_paths.update(repair_unknown_paths)
         attributed = list(unique_installed_skills(attributed))
