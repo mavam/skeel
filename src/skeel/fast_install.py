@@ -36,6 +36,12 @@ class RepositoryTree:
     complete: bool
 
 
+@dataclass(frozen=True)
+class FastInstallResult:
+    removed_paths: tuple[Path, ...] = ()
+    warnings: tuple[str, ...] = ()
+
+
 class FastInstallError(RuntimeError):
     pass
 
@@ -57,7 +63,9 @@ class FastInstallSession:
         source: SourceSpec,
         skill: SkillSpec | None,
         directory: Path,
-    ) -> None:
+        *,
+        prune: bool = False,
+    ) -> FastInstallResult:
         pin = effective_pin(source, skill)
         if pin is None:
             raise FastInstallError("fast install requires an explicit pin")
@@ -78,6 +86,18 @@ class FastInstallSession:
                 skill=selected_skill,
                 directory=directory,
             )
+
+        if prune and skill is None and repository_tree.complete:
+            return prune_removed_skills(
+                source=source.source,
+                remote_skill_paths=repository_tree.skill_paths,
+                directory=directory,
+            )
+        return FastInstallResult()
+
+    def repository_tree(self, pin: str) -> RepositoryTree:
+        resolved = self._resolve_ref(pin)
+        return self._source_repository_tree(resolved.commit_sha)
 
     def immutable_tree_is_current(
         self,
@@ -315,7 +335,88 @@ def install_skill(
         skill_path=f"{skill.path}/SKILL.md",
         tree_sha=tree_sha,
         pinned_ref=pin,
+        install_path=target,
     )
+
+
+def prunable_skill_directories(
+    *,
+    source: str,
+    remote_skill_paths: frozenset[str],
+    directory: Path,
+) -> tuple[Path, ...]:
+    repo_url = f"https://github.com/{source}"
+    try:
+        candidates = tuple(directory.iterdir())
+    except FileNotFoundError:
+        return ()
+    except OSError as error:
+        raise FastInstallError(f"could not inspect {directory}: {error}") from error
+
+    prunable: list[Path] = []
+    for candidate in candidates:
+        provenance = removable_skill_provenance(candidate)
+        if provenance is None:
+            continue
+        installed_repo, installed_path = provenance
+        if installed_repo == repo_url and installed_path not in remote_skill_paths:
+            prunable.append(candidate)
+    return tuple(sorted(prunable))
+
+
+def removable_skill_provenance(candidate: Path) -> tuple[str, str] | None:
+    if candidate.is_symlink() or not candidate.is_dir():
+        return None
+    try:
+        raw_yaml, _ = read_frontmatter_body((candidate / "SKILL.md").read_text())
+    except OSError, UnicodeError, yaml.YAMLError:
+        return None
+    metadata = raw_yaml.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    installed_repo = value_as_str(metadata.get("github-repo")).removesuffix(".git")
+    installed_path = value_as_str(metadata.get("github-path"))
+    if not installed_repo or not installed_path:
+        return None
+    return installed_repo, installed_path
+
+
+def prune_removed_skills(
+    *,
+    source: str,
+    remote_skill_paths: frozenset[str],
+    directory: Path,
+) -> FastInstallResult:
+    repo_url = f"https://github.com/{source}"
+    removed: list[Path] = []
+    warnings: list[str] = []
+    for candidate in prunable_skill_directories(
+        source=source,
+        remote_skill_paths=remote_skill_paths,
+        directory=directory,
+    ):
+        provenance = removable_skill_provenance(candidate)
+        if provenance is None:
+            continue
+        installed_repo, installed_path = provenance
+        if installed_repo != repo_url or installed_path in remote_skill_paths:
+            continue
+        try:
+            shutil.rmtree(candidate)
+        except OSError as error:
+            warnings.append(f"could not prune {candidate}: {error}")
+            continue
+
+        removed.append(candidate)
+        try:
+            remove_lockfile_skill(
+                skill_name=candidate.name,
+                source=source,
+                install_path=candidate,
+            )
+        except OSError as error:
+            warnings.append(f"could not update the lockfile after pruning {candidate}: {error}")
+    return FastInstallResult(removed_paths=tuple(removed), warnings=tuple(warnings))
 
 
 def ignore_symlinks(directory: str, names: list[str]) -> set[str]:
@@ -376,6 +477,7 @@ def record_lockfile(
     skill_path: str,
     tree_sha: str,
     pinned_ref: str,
+    install_path: Path,
 ) -> None:
     path = Path.home() / ".agents" / ".skill-lock.json"
     with LOCKFILE_LOCK:
@@ -399,10 +501,36 @@ def record_lockfile(
             "skillFolderHash": tree_sha,
             "installedAt": installed_at,
             "updatedAt": now,
+            "installPath": str(install_path.resolve()),
         }
         if pinned_ref:
             entry["pinnedRef"] = pinned_ref
         skills[skill_name] = entry
+        path.write_text(json.dumps(data, indent=2) + "\n")
+
+
+def remove_lockfile_skill(
+    *,
+    skill_name: str,
+    source: str,
+    install_path: Path,
+) -> None:
+    path = Path.home() / ".agents" / ".skill-lock.json"
+    with LOCKFILE_LOCK:
+        if not path.exists():
+            return
+        data = read_lockfile(path)
+        skills = data.get("skills")
+        if not isinstance(skills, dict):
+            return
+        entry = skills.get(skill_name)
+        if not isinstance(entry, dict):
+            return
+        if entry.get("source") != source:
+            return
+        if entry.get("installPath") != str(install_path.resolve()):
+            return
+        del skills[skill_name]
         path.write_text(json.dumps(data, indent=2) + "\n")
 
 

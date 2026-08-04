@@ -8,6 +8,7 @@ import pytest
 
 from skeel import __version__
 from skeel.cli import Runtime, configure_interrupt_handling, diff_skills, main
+from skeel.fast_install import RepositoryTree, ResolvedRef
 from skeel.gh import GhOptions, InstalledSkill, SkillStep, read_skill_provenance
 from skeel.io import (
     ProcessResult,
@@ -91,6 +92,7 @@ metadata:
   github-ref: refs/heads/main
   github-repo: https://github.com/{source}
   github-tree-sha: {sha}
+  github-path: skills/{name}
 name: {name}
 ---
 # {name}
@@ -1647,6 +1649,20 @@ def test_run_steps_carries_step_scope_into_results(tmp_path: Path) -> None:
     assert all(result.json()["scope"] == "user" for result in results)
 
 
+def test_step_result_json_reports_removed_paths() -> None:
+    result = StepResult(
+        label="example/skill-catalog@*",
+        command=["refresh"],
+        returncode=0,
+        status="updated",
+        removed_paths=(Path("/tmp/skills/skill-beta"),),
+        warnings=("could not remove skill-gamma",),
+    )
+
+    assert result.json()["removed"] == ["/tmp/skills/skill-beta"]
+    assert result.json()["warnings"] == ["could not remove skill-gamma"]
+
+
 def test_process_runner_terminates_cancelled_subprocess(tmp_path: Path) -> None:
     ready = tmp_path / "ready"
     terminated = tmp_path / "terminated"
@@ -2401,6 +2417,18 @@ sources:
         return installed
 
     monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+    monkeypatch.setattr(
+        "skeel.fast_install.resolve_ref",
+        lambda source, pin: ResolvedRef(ref="refs/heads/main", commit_sha="commit-new"),
+    )
+    monkeypatch.setattr(
+        "skeel.fast_install.fetch_repository_tree",
+        lambda source, commit_sha: RepositoryTree(
+            directory_shas={"skills/skill-alpha": "tree-alpha"},
+            skill_paths=frozenset({"skills/skill-alpha"}),
+            complete=True,
+        ),
+    )
 
     for selector in ([], ["example/skill-catalog"]):
         assert main(["--json", "-g", "update", *selector, "--dry-run"]) == 0
@@ -2409,6 +2437,10 @@ sources:
             (
                 "example/skill-catalog@*",
                 ["gh", "api", "repos/example/skill-catalog/tarball/main"],
+            ),
+            (
+                "example/skill-catalog@skill-beta",
+                ["rm", "-rf", str(target / "skill-beta")],
             ),
         ]
 

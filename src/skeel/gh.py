@@ -12,8 +12,10 @@ import yaml
 from .fast_install import (
     FastInstallError,
     FastInstallSession,
+    effective_pin,
     fast_install_command,
     is_github_source,
+    prunable_skill_directories,
     supports_fast_install,
 )
 from .io import Command, ProcessResult, ProcessRunner, StepExecutor, StepOutcome
@@ -171,6 +173,7 @@ def install_steps(
     options: GhOptions,
     *,
     current: Sequence[InstalledSkill] = (),
+    prune: bool = False,
 ) -> list[SkillStep]:
     steps: list[SkillStep] = []
     skills: tuple[SkillSpec | None, ...] = (None,) if source.install_all else source.skills
@@ -200,6 +203,7 @@ def install_steps(
                 options=options,
                 command=command,
                 immutable_inventory=immutable_inventory,
+                prune=prune,
             )
         steps.append(SkillStep(label=label, command=command, executor=executor))
     return steps
@@ -236,6 +240,7 @@ def fast_install_executor(
     options: GhOptions,
     command: Command,
     immutable_inventory: dict[str, tuple[str, str]] | None = None,
+    prune: bool = False,
 ) -> StepExecutor:
     async def execute() -> ProcessResult:
         import asyncio
@@ -248,10 +253,21 @@ def fast_install_executor(
                 and await immutable_source_is_current(session, pin, immutable_inventory)
             ):
                 return ProcessResult(command=command, returncode=0)
-            await asyncio.to_thread(session.install, source, skill, options.directory)
+            install_result = await asyncio.to_thread(
+                session.install,
+                source,
+                skill,
+                options.directory,
+                prune=prune,
+            )
         except FastInstallError as error:
             return ProcessResult(command=command, returncode=1, stderr=str(error))
-        return ProcessResult(command=command, returncode=0)
+        return ProcessResult(
+            command=command,
+            returncode=0,
+            removed_paths=install_result.removed_paths,
+            warnings=install_result.warnings,
+        )
 
     return execute
 
@@ -377,11 +393,12 @@ def update_steps(
         attributed = list(unique_installed_skills(attributed))
         excluded_paths.update(skill.path for skill in attributed)
 
-        step = install_steps(source, options, current=attributed)[0]
+        step = install_steps(source, options, current=attributed, prune=True)[0]
         steps.append(
             replace(
                 step,
                 outcome=source_update_outcome(source, attributed, options),
+                parallel=not supports_fast_install(source, None),
             )
         )
 
@@ -430,6 +447,36 @@ def update_steps(
                 outcome=update_outcome(skill),
             )
         )
+    return steps
+
+
+def pinned_prune_preview_steps(
+    manifest: Manifest,
+    options: GhOptions,
+) -> list[SkillStep]:
+    steps: list[SkillStep] = []
+    for source in manifest.sources:
+        if not source.install_all or not supports_fast_install(source, None):
+            continue
+        pin = effective_pin(source, None)
+        assert pin is not None
+        repository_tree = FastInstallSession(source.source).repository_tree(pin)
+        if not repository_tree.complete:
+            continue
+        for path in prunable_skill_directories(
+            source=source.source,
+            remote_skill_paths=repository_tree.skill_paths,
+            directory=options.directory,
+        ):
+            steps.append(
+                SkillStep(
+                    label=source_skill_label(source.source, path.name),
+                    command=["rm", "-rf", str(path)],
+                    remove_path=path,
+                    kind="remove",
+                    parallel=False,
+                )
+            )
     return steps
 
 
@@ -517,9 +564,16 @@ def source_update_outcome(
     known_paths = set(before)
 
     def outcome(result: ProcessResult) -> StepOutcome:
-        del result
         after = scan_source_inventory(source, options, known_paths=known_paths)
-        return classify_source_inventory_change(before, after)
+        classified = classify_source_inventory_change(before, after)
+        if not result.removed_paths:
+            return classified
+        names = ", ".join(sorted(path.name for path in result.removed_paths))
+        detail = classified.detail or skill_count_detail(len(result.removed_paths), prefix="-")
+        return StepOutcome(
+            status=classified.status,
+            detail=f"{detail} (removed: {names})",
+        )
 
     return outcome
 
@@ -584,12 +638,15 @@ def source_inventory_change_detail(
         }
         if len(transitions) == 1:
             return next(iter(transitions))
-        return f"{len(changed)} changed"
-    if added and not removed and not changed:
-        return skill_count_detail(len(added), prefix="+")
-    if removed and not added and not changed:
-        return skill_count_detail(len(removed), prefix="-")
-    return f"{len(added) + len(removed) + len(changed)} changed"
+
+    details: list[str] = []
+    if added:
+        details.append(skill_count_detail(len(added), prefix="+"))
+    if removed:
+        details.append(skill_count_detail(len(removed), prefix="-"))
+    if changed:
+        details.append(f"{len(changed)} changed")
+    return ", ".join(details)
 
 
 def skill_count_detail(count: int, *, prefix: str) -> str:
@@ -625,7 +682,7 @@ def read_skill_metadata(path: Path) -> Mapping[str, object]:
 def read_frontmatter(path: Path) -> Mapping[str, object]:
     try:
         lines = path.read_text().splitlines()
-    except OSError:
+    except OSError, UnicodeError:
         return {}
     if not lines or lines[0].strip() != "---":
         return {}
@@ -638,7 +695,10 @@ def read_frontmatter(path: Path) -> Mapping[str, object]:
     else:
         return {}
 
-    data = yaml.safe_load("\n".join(body))
+    try:
+        data = yaml.safe_load("\n".join(body))
+    except yaml.YAMLError:
+        return {}
     return data if isinstance(data, dict) else {}
 
 

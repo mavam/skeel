@@ -54,6 +54,8 @@ class ProcessResult:
     returncode: int
     stdout: str = ""
     stderr: str = ""
+    removed_paths: tuple[Path, ...] = ()
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,8 @@ class StepResult:
     scope: str | None = None
     stdout: str = ""
     stderr: str = ""
+    removed_paths: tuple[Path, ...] = ()
+    warnings: tuple[str, ...] = ()
 
     def json(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -90,6 +94,10 @@ class StepResult:
             payload["stdout"] = self.stdout
         if self.stderr:
             payload["stderr"] = self.stderr
+        if self.removed_paths:
+            payload["removed"] = [str(path) for path in self.removed_paths]
+        if self.warnings:
+            payload["warnings"] = list(self.warnings)
         return payload
 
 
@@ -440,6 +448,8 @@ class Terminal:
             scope=scope,
             stdout=result.stdout if failed else "",
             stderr=result.stderr if failed else "",
+            removed_paths=result.removed_paths,
+            warnings=result.warnings,
         )
 
     def execute_remove_step(
@@ -462,6 +472,8 @@ class Terminal:
     def render_step_result(self, result: StepResult) -> None:
         marker, detail = self.step_result_marker(result)
         self.step_status_line(marker, result.label, detail=detail, scope=result.scope)
+        for warning in result.warnings:
+            self.warning(warning)
 
     def render_update_summary(self, results: Sequence[StepResult], *, verbose: bool) -> None:
         failed: list[StepResult] = []
@@ -500,6 +512,9 @@ class Terminal:
         for count, label, style in summary:
             if count:
                 self.error_console.print(f"{count} {label}", style=style)
+        for result in results:
+            for warning in result.warnings:
+                self.warning(warning)
 
     def step_result_marker(self, result: StepResult) -> tuple[OutputMarker, str | None]:
         if result.returncode not in (None, 0):

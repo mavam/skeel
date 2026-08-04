@@ -1,4 +1,5 @@
 import asyncio
+import shutil
 from pathlib import Path
 
 import pytest
@@ -585,6 +586,7 @@ def test_update_steps_refresh_unpinned_dynamic_source_once(tmp_path: Path) -> No
         str(tmp_path),
         "--force",
     ]
+    assert steps[0].executor is None
 
 
 def test_update_steps_refresh_branch_pinned_dynamic_source_once(tmp_path: Path) -> None:
@@ -600,6 +602,7 @@ def test_update_steps_refresh_branch_pinned_dynamic_source_once(tmp_path: Path) 
     assert steps[0].label == "example/skill-catalog@*"
     assert steps[0].command == ["gh", "api", "repos/example/skill-catalog/tarball/main"]
     assert steps[0].executor is not None
+    assert steps[0].parallel is False
 
 
 def test_update_steps_exclude_dynamic_skills_from_per_skill_updates(tmp_path: Path) -> None:
@@ -743,6 +746,26 @@ def test_source_inventory_classifier_summarizes_nonuniform_changes() -> None:
     assert outcome.detail == "2 changed"
 
 
+def test_source_inventory_classifier_reports_mixed_changes() -> None:
+    before = {
+        Path("skill-alpha"): SkillProvenance(ref="refs/heads/main", tree_sha="old-a"),
+        Path("skill-beta"): SkillProvenance(ref="refs/heads/main", tree_sha="old-b"),
+        Path("skill-gamma"): SkillProvenance(ref="refs/heads/main", tree_sha="old-c"),
+        Path("skill-delta"): SkillProvenance(ref="refs/heads/main", tree_sha="old-d"),
+    }
+    after = {
+        Path("skill-alpha"): SkillProvenance(ref="refs/heads/main", tree_sha="new-a"),
+        Path("skill-beta"): SkillProvenance(ref="refs/heads/main", tree_sha="new-b"),
+        Path("skill-delta"): SkillProvenance(ref="refs/heads/main", tree_sha="old-d"),
+        Path("skill-epsilon"): SkillProvenance(ref="refs/heads/main", tree_sha="new-e"),
+    }
+
+    outcome = classify_source_inventory_change(before, after)
+
+    assert outcome.status == "updated"
+    assert outcome.detail == "+1 skill, -1 skill, 2 changed"
+
+
 def test_immutable_dynamic_source_skips_unchanged_archive(
     tmp_path: Path,
     monkeypatch,
@@ -880,3 +903,104 @@ def test_immutable_install_all_refresh_discovers_missing_remote_skill(
     assert read_skill_provenance(tmp_path / "skill-beta").tree_sha == "new123456789"
     assert outcome.status == "updated"
     assert outcome.detail == "+1 skill"
+
+
+def test_pinned_install_all_refresh_reports_pruned_skill(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("skeel.fast_install.Path.home", lambda: tmp_path / "home")
+    installed = [
+        dynamic_skill(tmp_path, "skill-alpha"),
+        dynamic_skill(tmp_path, "skill-beta"),
+    ]
+    source = dynamic_manifest(pin="main").sources[0]
+    manifest = Manifest(path=Path("manifest.yaml"), sources=(source,))
+    archive_root = tmp_path / "archive"
+    write_skill(
+        archive_root / "skills" / "skill-alpha",
+        "---\nname: skill-alpha\n---\n# Skill Alpha",
+    )
+
+    monkeypatch.setattr(
+        "skeel.fast_install.resolve_ref",
+        lambda source, pin: ResolvedRef(ref="refs/heads/main", commit_sha="commit-new"),
+    )
+    monkeypatch.setattr(
+        "skeel.fast_install.download_archive",
+        lambda source, commit_sha, directory: archive_root,
+    )
+    monkeypatch.setattr(
+        "skeel.fast_install.fetch_repository_tree",
+        lambda source, sha: RepositoryTree(
+            directory_shas={"skills/skill-alpha": "old123456789"},
+            skill_paths=frozenset({"skills/skill-alpha"}),
+            complete=True,
+        ),
+    )
+    step = update_steps(installed, GhOptions(directory=tmp_path), manifest=manifest)[0]
+    assert step.executor is not None
+    assert step.outcome is not None
+
+    result = asyncio.run(step.executor())
+    outcome = step.outcome(result)
+
+    assert result.returncode == 0
+    assert not (tmp_path / "skill-beta").exists()
+    assert outcome.status == "updated"
+    assert outcome.detail == "-1 skill (removed: skill-beta)"
+
+
+def test_prune_warning_preserves_source_refresh_outcome(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr("skeel.fast_install.Path.home", lambda: tmp_path / "home")
+    installed = [
+        dynamic_skill(tmp_path, "skill-alpha"),
+        dynamic_skill(tmp_path, "skill-beta"),
+    ]
+    source = dynamic_manifest(pin="main").sources[0]
+    manifest = Manifest(path=Path("manifest.yaml"), sources=(source,))
+    archive_root = tmp_path / "archive"
+    write_skill(
+        archive_root / "skills" / "skill-alpha",
+        "---\nname: skill-alpha\n---\n# Skill Alpha",
+    )
+    monkeypatch.setattr(
+        "skeel.fast_install.resolve_ref",
+        lambda source, pin: ResolvedRef(ref="refs/heads/main", commit_sha="commit-new"),
+    )
+    monkeypatch.setattr(
+        "skeel.fast_install.download_archive",
+        lambda source, commit_sha, directory: archive_root,
+    )
+    monkeypatch.setattr(
+        "skeel.fast_install.fetch_repository_tree",
+        lambda source, sha: RepositoryTree(
+            directory_shas={"skills/skill-alpha": "new123456789"},
+            skill_paths=frozenset({"skills/skill-alpha"}),
+            complete=True,
+        ),
+    )
+    remove_tree = shutil.rmtree
+
+    def fail_stale_remove(path: str | Path, *args, **kwargs) -> None:
+        if Path(path).name == "skill-beta":
+            raise PermissionError("permission denied")
+        remove_tree(path, *args, **kwargs)
+
+    monkeypatch.setattr("skeel.fast_install.shutil.rmtree", fail_stale_remove)
+    step = update_steps(installed, GhOptions(directory=tmp_path), manifest=manifest)[0]
+    assert step.executor is not None
+    assert step.outcome is not None
+
+    result = asyncio.run(step.executor())
+    outcome = step.outcome(result)
+
+    assert result.returncode == 0
+    assert len(result.warnings) == 1
+    assert "permission denied" in result.warnings[0]
+    assert (tmp_path / "skill-beta").exists()
+    assert outcome.status == "updated"
+    assert outcome.detail == "main@old1234 → main@new1234"

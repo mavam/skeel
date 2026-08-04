@@ -182,10 +182,17 @@ tree is unchanged, without downloading the same archive again. Skills installed
 by `gh skill` include provenance in `SKILL.md` frontmatter, so future updates can
 track them directly.
 
-Install-all updates add and refresh skills, but they don't prune directories for
-skills removed upstream. Use `apply --reinstall` when you need to force-refresh
-an install-all entry. Upstream removal pruning requires additional ownership
-checks and is deferred to a future `apply` reconciliation improvement.
+Updates for pinned install-all sources also prune skills removed upstream. Skeel
+deletes a directory only when its `github-repo` matches the source exactly and
+its `github-path` is absent from the source's current inventory. Metadata-less,
+malformed, and differently owned directories stay untouched. The source-level
+result names removed skills, and JSON output includes their paths.
+
+A dry run resolves a pinned source and previews each removal without changing
+local files. Unpinned install-all sources still add and refresh skills without
+pruning because `gh skill install --all` doesn't expose the remote inventory.
+Use `apply --reinstall` when you need to force-refresh an install-all entry
+without pruning it.
 
 ### `add`
 
