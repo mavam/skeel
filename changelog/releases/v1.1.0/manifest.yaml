@@ -1,0 +1,9 @@
+created: 2026-08-04
+title: Smarter install-all updates
+intro: >-
+  Skeel now refreshes install-all sources during updates, discovers newly added skills,
+  and safely prunes skills removed upstream. It preserves targeted updates and protects
+  directories with missing or mismatched ownership metadata.
+source:
+  mode: sync-stable-queue
+  previous_stable: v1.0.1
