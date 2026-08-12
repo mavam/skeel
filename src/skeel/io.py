@@ -6,7 +6,7 @@ import os
 import shlex
 import shutil
 import sys
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
@@ -248,6 +248,7 @@ class ProcessRunner:
         command: Command,
         *,
         capture_output: bool = False,
+        env: Mapping[str, str] | None = None,
     ) -> ProcessResult:
         pipe = asyncio.subprocess.PIPE
         stdout = pipe if capture_output else None
@@ -256,6 +257,7 @@ class ProcessRunner:
             *command,
             stdout=stdout,
             stderr=stderr,
+            env={**os.environ, **env} if env is not None else None,
         )
 
         try:

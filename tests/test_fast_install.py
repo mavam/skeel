@@ -19,7 +19,7 @@ from skeel.fast_install import (
     remove_lockfile_skill,
     select_skill,
 )
-from skeel.gh import GhOptions, InstalledSkill, read_skill_provenance, update_steps
+from skeel.gh import InstalledSkill, SkillTarget, read_skill_provenance, update_steps
 from skeel.manifest import Manifest, SkillSpec, SourceSpec
 
 
@@ -291,7 +291,7 @@ def test_pinned_install_all_refresh_discovers_new_skill(
             ),
         ),
     )
-    step = update_steps(installed, GhOptions(directory=target), manifest=manifest)[0]
+    step = update_steps(installed, SkillTarget(directory=target), manifest=manifest)[0]
     assert step.executor is not None
     assert step.outcome is not None
 

@@ -4,7 +4,7 @@ import asyncio
 import os
 import sys
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol, override
 
@@ -22,7 +22,6 @@ from clypi import (
 
 from . import __version__
 from .gh import (
-    GhOptions,
     InstalledSkill,
     SkillStep,
     installed_skills,
@@ -74,6 +73,12 @@ from .reconcile import (
     unique_shadow_warnings,
     update_installed_skills,
 )
+from .targets import (
+    AGENT_HOSTS,
+    SkillTarget,
+    project_base,
+    resolve_target,
+)
 
 
 def parse_scope(value: object) -> str:
@@ -81,6 +86,22 @@ def parse_scope(value: object) -> str:
     if scope not in {"project", "user"}:
         raise ValueError("scope must be 'project' or 'user'")
     return scope
+
+
+def agent_arg(*, inherited: bool = False) -> str | None:
+    return arg(
+        None,
+        inherited=inherited,
+        help="Target a specific agent's skill directory. See: skeel agents.",
+    )
+
+
+def dir_arg(*, inherited: bool = False) -> str | None:
+    return arg(
+        None,
+        inherited=inherited,
+        help="Target an explicit skills directory instead of a known agent.",
+    )
 
 
 def manifest_arg(*, inherited: bool = False) -> str | None:
@@ -135,6 +156,14 @@ def reinstall_arg(*, inherited: bool = False) -> bool:
     )
 
 
+def prune_arg(*, inherited: bool = False) -> bool:
+    return arg(
+        False,
+        inherited=inherited,
+        help="Remove installed skills that the manifest does not declare.",
+    )
+
+
 def json_arg(*, inherited: bool = False) -> bool:
     return arg(
         False,
@@ -167,10 +196,13 @@ class CommonOptions(Protocol):
     all: bool
     dry_run: bool
     json: bool
+    agent: str | None
+    dir: str | None
 
 
 class ApplyOptions(CommonOptions, Protocol):
     reinstall: bool
+    prune: bool
     source: str | None
     skill: str | None
 
@@ -197,7 +229,7 @@ class RemoveOptions(CommonOptions, Protocol):
 class Runtime:
     manifest_path: Path
     manifest_required: bool
-    options: GhOptions
+    target: SkillTarget
     runner: ProcessRunner
     terminal: Terminal
 
@@ -261,12 +293,26 @@ def single_scope(command: CommonOptions) -> str:
 def build_runtime_for_scope(command: CommonOptions, *, scope: str) -> Runtime:
     runner = ProcessRunner()
     env_manifest = os.environ.get("SKEEL_MANIFEST")
-    base = Path.home() if scope == "user" else Path.cwd()
-    manifest_base = base if scope == "user" else None
+    assert scope in ("project", "user")
+    target = resolve_target(
+        scope=scope,  # type: ignore[arg-type]
+        agent=command.agent,
+        directory=command.dir,
+        cwd=Path.cwd(),
+        home=Path.home(),
+    )
+    if scope == "user":
+        manifest_base: Path | None = Path.home()
+    elif command.agent is not None:
+        # Named agents anchor at the git root so manifest and target stay
+        # co-anchored regardless of the working directory.
+        manifest_base = project_base(Path.cwd(), agent=command.agent)
+    else:
+        manifest_base = None
     return Runtime(
         manifest_path=manifest_path(command.manifest, base=manifest_base),
         manifest_required=command.manifest is not None or env_manifest is not None,
-        options=GhOptions(directory=base / ".agents" / "skills"),
+        target=target,
         runner=runner,
         terminal=Terminal(json_output=command.json),
     )
@@ -285,7 +331,7 @@ def load_runtime_manifest(runtime: Runtime) -> Manifest | None:
 
 
 def selection_key(runtime: Runtime) -> SelectionKey:
-    return (canonical_path(runtime.manifest_path), canonical_path(runtime.options.directory))
+    return (canonical_path(runtime.manifest_path), canonical_path(runtime.target.directory))
 
 
 def canonical_path(path: Path) -> Path:
@@ -352,7 +398,7 @@ async def manifest_scope_inventories(
             scope=context.scope,
             runtime=context.runtime,
             manifest=context.manifest,
-            installed=await installed_skills(context.runtime.options, context.runtime.runner),
+            installed=await installed_skills(context.runtime.target, context.runtime.runner),
         )
         for context in selection.contexts
     ]
@@ -372,7 +418,7 @@ async def manifest_scope_inventories(
                     runtime=project_runtime,
                     manifest=load_runtime_manifest(project_runtime),
                     installed=await installed_skills(
-                        project_runtime.options,
+                        project_runtime.target,
                         project_runtime.runner,
                     ),
                 ),
@@ -389,7 +435,7 @@ async def list_scope_inventories(selection: ListSelection) -> tuple[ScopeInvento
                 scope=context.scope,
                 runtime=context.runtime,
                 manifest=context.manifest,
-                installed=await installed_skills(context.runtime.options, context.runtime.runner),
+                installed=await installed_skills(context.runtime.target, context.runtime.runner),
             )
         )
     return tuple(inventories)
@@ -398,6 +444,8 @@ async def list_scope_inventories(selection: ListSelection) -> tuple[ScopeInvento
 def shadow_user_inventories(
     inventories: Sequence[ScopeInventory],
 ) -> ShadowedInventories:
+    if any(inventory.runtime.target.agent is not None for inventory in inventories):
+        return duplicate_scope_inventories(inventories)
     project = next(
         (inventory for inventory in inventories if inventory.scope == "project"),
         None,
@@ -454,17 +502,64 @@ def shadow_user_inventories(
     )
 
 
+def duplicate_scope_inventories(
+    inventories: Sequence[ScopeInventory],
+) -> ShadowedInventories:
+    """Warn about skills present in both scopes without filtering either copy.
+
+    Named agents reconcile project and user scope independently; the agent
+    decides runtime precedence, so Skeel never skips a copy.
+    """
+    project = next(
+        (inventory for inventory in inventories if inventory.scope == "project"),
+        None,
+    )
+    if project is None:
+        return ShadowedInventories(inventories=tuple(inventories), warnings=())
+
+    shadow_index = build_skill_shadow_index(project.manifest, project.installed)
+    if not shadow_index.has_entries:
+        return ShadowedInventories(inventories=tuple(inventories), warnings=())
+
+    warnings: list[SkillShadowWarning] = []
+    for inventory in inventories:
+        if inventory.scope != "user":
+            continue
+        if inventory.manifest is not None:
+            _, manifest_warnings = filter_shadowed_manifest(
+                inventory.manifest,
+                shadow_index,
+                shadowing_scope="project",
+                shadowed_scope=inventory.scope,
+            )
+            warnings.extend(manifest_warnings)
+        _, installed_warnings = filter_shadowed_installed(
+            inventory.installed,
+            shadow_index,
+            shadowing_scope="project",
+            shadowed_scope=inventory.scope,
+        )
+        warnings.extend(installed_warnings)
+
+    return ShadowedInventories(
+        inventories=tuple(inventories),
+        warnings=tuple(
+            replace(warning, duplicate=True) for warning in unique_shadow_warnings(warnings)
+        ),
+    )
+
+
 async def diff_skills(
     manifest: Manifest,
-    options: GhOptions,
+    target: SkillTarget,
     runner: ProcessRunner,
 ) -> SkillDiff:
-    return diff_installed_skills(manifest, await installed_skills(options, runner))
+    return diff_installed_skills(manifest, await installed_skills(target, runner))
 
 
 def diff_json(
-    missing: Sequence[tuple[DesiredSkill, str]],
-    extra: Sequence[tuple[InstalledSkill, str]],
+    missing: Sequence[tuple[DesiredSkill, ScopeInventory]],
+    extra: Sequence[tuple[InstalledSkill, ScopeInventory]],
     warnings: Sequence[SkillShadowWarning] = (),
 ) -> dict[str, object]:
     payload: dict[str, object] = {
@@ -472,22 +567,33 @@ def diff_json(
             {
                 "name": skill.name,
                 "source": skill.source,
-                "scope": scope,
+                **target_payload(inventory),
             }
-            for skill, scope in missing
+            for skill, inventory in missing
         ],
         "extra": [
             {
                 "name": skill.name,
                 "path": str(skill.path),
                 "source": skill.source_url or None,
-                "scope": scope,
+                **target_payload(inventory),
             }
-            for skill, scope in extra
+            for skill, inventory in extra
         ],
         "in_sync": not missing and not extra,
     }
     add_warning_payload(payload, warnings)
+    return payload
+
+
+def target_payload(inventory: ScopeInventory) -> dict[str, object]:
+    target = inventory.runtime.target
+    payload: dict[str, object] = {
+        "scope": target.scope if target.scope == "custom" else inventory.scope,
+        "directory": str(target.directory),
+    }
+    if target.agent is not None:
+        payload["agent"] = target.agent
     return payload
 
 
@@ -630,22 +736,22 @@ async def command_diff(command: CommonOptions) -> int:
         return 0
 
     shadowed = shadow_user_inventories(await manifest_scope_inventories(command, selection))
-    missing: list[tuple[DesiredSkill, str]] = []
-    extra: list[tuple[InstalledSkill, str]] = []
+    missing: list[tuple[DesiredSkill, ScopeInventory]] = []
+    extra: list[tuple[InstalledSkill, ScopeInventory]] = []
     for inventory in shadowed.inventories:
         if inventory.manifest is None:
             continue
         current = diff_installed_skills(inventory.manifest, inventory.installed)
-        missing.extend((skill, inventory.scope) for skill in current.missing)
-        extra.extend((skill, inventory.scope) for skill in current.extra)
+        missing.extend((skill, inventory) for skill in current.missing)
+        extra.extend((skill, inventory) for skill in current.extra)
 
     if command.json:
         terminal.json(diff_json(missing, extra, warnings=shadowed.warnings))
     else:
         render_shadow_warnings(terminal, shadowed.warnings)
         terminal.diff(
-            [(skill.name, skill.source, scope) for skill, scope in missing],
-            [(skill.name, skill.source_url or None, scope) for skill, scope in extra],
+            [(skill.name, skill.source, inventory.scope) for skill, inventory in missing],
+            [(skill.name, skill.source_url or None, inventory.scope) for skill, inventory in extra],
             manifest_path=selection.contexts[0].manifest.path,
         )
     return 0 if not missing and not extra else 1
@@ -662,6 +768,7 @@ async def command_list(command: CommonOptions) -> int:
                 inventory.manifest,
                 inventory.installed,
                 scope=inventory.scope,
+                agent=inventory.runtime.target.agent,
             )
         )
 
@@ -713,10 +820,11 @@ async def command_apply(command: ApplyOptions) -> int:
             continue
         plan = apply_plan(
             inventory.manifest,
-            inventory.runtime.options,
+            inventory.runtime.target,
             () if command.reinstall else inventory.installed,
             reinstall=command.reinstall,
             selector=selector,
+            prune=command.prune,
         )
         steps = scoped_steps(plan, inventory.scope)
         context_results, context_exit_code = await run_apply_steps(
@@ -743,8 +851,15 @@ async def apply_manifest(
     *,
     reinstall: bool = False,
     scope: str | None = None,
+    removals: Sequence[RemoveTarget] = (),
 ) -> int:
-    steps = await apply_steps(manifest, runtime, reinstall=reinstall, scope=scope)
+    steps = await apply_steps(
+        manifest,
+        runtime,
+        reinstall=reinstall,
+        scope=scope,
+        removals=removals,
+    )
     results, exit_code = await run_apply_steps(command, runtime, steps)
     return finish_apply_results(
         command,
@@ -761,14 +876,16 @@ async def apply_steps(
     reinstall: bool = False,
     selector: ApplySelector | None = None,
     scope: str | None = None,
+    removals: Sequence[RemoveTarget] = (),
 ) -> list[SkillStep]:
-    installed = () if reinstall else await installed_skills(runtime.options, runtime.runner)
+    installed = () if reinstall else await installed_skills(runtime.target, runtime.runner)
     plan = apply_plan(
         manifest,
-        runtime.options,
+        runtime.target,
         installed,
         reinstall=reinstall,
         selector=selector,
+        removals=removals,
     )
     return scoped_steps(plan, scope)
 
@@ -924,6 +1041,7 @@ async def command_remove_all(command: RemoveOptions) -> int:
     exit_code = 0
     updated_manifests: dict[SelectionKey, Manifest] = {}
     apply_keys: set[SelectionKey] = set()
+    remove_targets: dict[SelectionKey, list[RemoveTarget]] = {}
     for context, target in matches:
         update = remove_manifest_source(
             context.runtime.manifest_path,
@@ -934,6 +1052,7 @@ async def command_remove_all(command: RemoveOptions) -> int:
         context_key = selection_key(context.runtime)
         updated_manifests[context_key] = update.manifest
         apply_keys.add(context_key)
+        remove_targets.setdefault(context_key, []).append(target)
         removals.append(
             {
                 "scope": context.scope,
@@ -977,8 +1096,9 @@ async def command_remove_all(command: RemoveOptions) -> int:
                 continue
             plan = apply_plan(
                 inventory.manifest,
-                inventory.runtime.options,
+                inventory.runtime.target,
                 inventory.installed,
+                removals=remove_targets.get(selection_key(inventory.runtime), ()),
             )
             steps = scoped_steps(plan, inventory.scope)
             context_results, context_exit_code = await run_apply_steps(
@@ -1065,11 +1185,18 @@ async def command_remove(command: RemoveOptions) -> int:
             )
         return 0
 
+    removals = (RemoveTarget(source=source, skill=skill),)
     if command.json:
         if not manifest_exists:
             runtime.terminal.json(run_json(dry_run=command.dry_run, steps=[]))
             return 0
-        return await apply_manifest(command, runtime, update.manifest, scope=scope)
+        return await apply_manifest(
+            command,
+            runtime,
+            update.manifest,
+            scope=scope,
+            removals=removals,
+        )
 
     remove_status_line(
         runtime.terminal,
@@ -1082,7 +1209,13 @@ async def command_remove(command: RemoveOptions) -> int:
     )
     if not manifest_exists:
         return 0
-    return await apply_manifest(command, runtime, update.manifest, scope=scope)
+    return await apply_manifest(
+        command,
+        runtime,
+        update.manifest,
+        scope=scope,
+        removals=removals,
+    )
 
 
 def add_status_line(
@@ -1170,7 +1303,7 @@ async def command_update(command: UpdateOptions) -> int:
         # different directories, so the same source must refresh in both.
         plan = update_steps(
             installed,
-            inventory.runtime.options,
+            inventory.runtime.target,
             manifest=manifest,
         )
         if command.dry_run:
@@ -1178,7 +1311,7 @@ async def command_update(command: UpdateOptions) -> int:
                 await asyncio.to_thread(
                     pinned_prune_preview_steps,
                     manifest,
-                    inventory.runtime.options,
+                    inventory.runtime.target,
                 )
             )
         steps.extend(scoped_steps(plan, inventory.scope))
@@ -1227,6 +1360,33 @@ async def command_update(command: UpdateOptions) -> int:
     return exit_code
 
 
+async def command_agents(command: CommonOptions) -> int:
+    terminal = Terminal(json_output=command.json)
+    if command.json:
+        terminal.json(
+            {
+                "agents": [
+                    {
+                        "agent": host.id,
+                        "name": host.name,
+                        "project": host.project_dir,
+                        "user": host.user_dir,
+                    }
+                    for host in AGENT_HOSTS
+                ]
+            }
+        )
+        return 0
+
+    id_width = max(len(host.id) for host in AGENT_HOSTS)
+    project_width = max(len(host.project_dir) for host in AGENT_HOSTS)
+    for host in AGENT_HOSTS:
+        terminal.line(
+            f"{host.id:<{id_width}}  {host.project_dir:<{project_width}}  ~/{host.user_dir}"
+        )
+    return 0
+
+
 class SkeelCommand(Command):
     async def execute(self) -> int:
         raise NotImplementedError
@@ -1240,6 +1400,8 @@ class PathCommand(SkeelCommand):
     user: bool = user_scope_arg(inherited=True)
     all: bool = all_scopes_arg(inherited=True)
     dry_run: bool = dry_run_arg(inherited=True)
+    agent: str | None = agent_arg(inherited=True)
+    dir: str | None = dir_arg(inherited=True)
     json: bool = json_arg(inherited=True)
 
     @override
@@ -1270,6 +1432,8 @@ class Diff(SkeelCommand):
     user: bool = user_scope_arg(inherited=True)
     all: bool = all_scopes_arg(inherited=True)
     dry_run: bool = dry_run_arg(inherited=True)
+    agent: str | None = agent_arg(inherited=True)
+    dir: str | None = dir_arg(inherited=True)
     json: bool = json_arg(inherited=True)
 
     @override
@@ -1295,6 +1459,8 @@ class ListCommand(SkeelCommand):
     user: bool = user_scope_arg(inherited=True)
     all: bool = all_scopes_arg(inherited=True)
     dry_run: bool = dry_run_arg(inherited=True)
+    agent: str | None = agent_arg(inherited=True)
+    dir: str | None = dir_arg(inherited=True)
     json: bool = json_arg(inherited=True)
 
     @override
@@ -1333,15 +1499,19 @@ class Apply(SkeelCommand):
     user: bool = user_scope_arg(inherited=True)
     all: bool = all_scopes_arg(inherited=True)
     dry_run: bool = dry_run_arg(inherited=True)
+    agent: str | None = agent_arg(inherited=True)
+    dir: str | None = dir_arg(inherited=True)
     reinstall: bool = reinstall_arg()
+    prune: bool = prune_arg()
     json: bool = json_arg(inherited=True)
 
     @override
     @classmethod
     def epilog(cls) -> str:
         return examples(
-            ("skeel apply", "Reconcile installed project skills with the manifest"),
+            ("skeel apply", "Install missing project skills, preserving extras"),
             ("skeel apply --dry-run", "Preview installs and removals"),
+            ("skeel apply --prune", "Also remove skills the manifest does not declare"),
             ("skeel apply owner/repo", "Reconcile a single manifest source"),
             ("skeel apply owner/repo skill-name", "Reconcile one skill from one source"),
             ("skeel apply --reinstall", "Reinstall every manifest entry"),
@@ -1371,6 +1541,8 @@ class Add(SkeelCommand):
     user: bool = user_scope_arg(inherited=True)
     all: bool = all_scopes_arg(inherited=True)
     dry_run: bool = dry_run_arg(inherited=True)
+    agent: str | None = agent_arg(inherited=True)
+    dir: str | None = dir_arg(inherited=True)
     json: bool = json_arg(inherited=True)
 
     @override
@@ -1409,6 +1581,8 @@ class Remove(SkeelCommand):
     user: bool = user_scope_arg(inherited=True)
     all: bool = all_scopes_arg(inherited=True)
     dry_run: bool = dry_run_arg(inherited=True)
+    agent: str | None = agent_arg(inherited=True)
+    dir: str | None = dir_arg(inherited=True)
     json: bool = json_arg(inherited=True)
 
     @override
@@ -1446,6 +1620,8 @@ class Update(SkeelCommand):
     user: bool = user_scope_arg(inherited=True)
     all: bool = all_scopes_arg(inherited=True)
     dry_run: bool = dry_run_arg(inherited=True)
+    agent: str | None = agent_arg(inherited=True)
+    dir: str | None = dir_arg(inherited=True)
     verbose: bool = verbose_arg()
     json: bool = json_arg(inherited=True)
 
@@ -1465,6 +1641,36 @@ class Update(SkeelCommand):
         return await command_update(self)
 
 
+class AgentsCommand(SkeelCommand):
+    """List supported agents and their skill directories."""
+
+    manifest: str | None = manifest_arg(inherited=True)
+    scope: str | None = scope_arg(inherited=True)
+    user: bool = user_scope_arg(inherited=True)
+    all: bool = all_scopes_arg(inherited=True)
+    dry_run: bool = dry_run_arg(inherited=True)
+    agent: str | None = agent_arg(inherited=True)
+    dir: str | None = dir_arg(inherited=True)
+    json: bool = json_arg(inherited=True)
+
+    @override
+    @classmethod
+    def prog(cls) -> str:
+        return "agents"
+
+    @override
+    @classmethod
+    def epilog(cls) -> str:
+        return examples(
+            ("skeel agents", "List supported agents and their skill directories"),
+            ("skeel agents --json", "Emit the agent registry as JSON"),
+        )
+
+    @override
+    async def execute(self) -> int:
+        return await command_agents(self)
+
+
 class Skeel(Command):
     """Declarative agent skill manager."""
 
@@ -1473,9 +1679,13 @@ class Skeel(Command):
     user: bool = user_scope_arg()
     all: bool = all_scopes_arg()
     dry_run: bool = dry_run_arg()
+    agent: str | None = agent_arg()
+    dir: str | None = dir_arg()
     json: bool = json_arg()
     version: bool = arg(False, help="Print the skeel version and exit.")
-    subcommand: PathCommand | Diff | ListCommand | Apply | Add | Remove | Update | None = None
+    subcommand: (
+        PathCommand | Diff | ListCommand | Apply | Add | Remove | Update | AgentsCommand | None
+    ) = None
 
     @override
     @classmethod
@@ -1484,10 +1694,13 @@ class Skeel(Command):
             ("skeel add owner/repo skill-name", "Add a skill to the project manifest"),
             ("skeel diff", "Preview manifest drift"),
             ("skeel apply --dry-run", "Preview installs and removals"),
-            ("skeel apply", "Install missing skills and remove extras"),
+            ("skeel apply", "Install missing skills, preserving extras"),
+            ("skeel apply --prune", "Also remove skills the manifest does not declare"),
             ("skeel update", "Update installed skills declared by the manifest"),
             ("skeel list --json", "Print machine-readable skill inventory"),
             ("skeel -g apply", "Manage user-scope skills instead of the project"),
+            ("skeel --agent claude-code apply", "Manage a specific agent's skill directory"),
+            ("skeel agents", "List supported agents and their directories"),
             ("skeel --manifest ./skills.yaml apply", "Use an explicit manifest path"),
         )
 
@@ -1579,6 +1792,31 @@ def validate_scope_selectors(args: Sequence[str]) -> None:
         )
 
 
+def validate_target_selectors(args: Sequence[str]) -> None:
+    scope_flags = {"--scope", "--user", "--global", "--all", "-g", "-a"}
+    has_dir = False
+    agent_count = 0
+    has_scope_flag = False
+    for value in normalize_short_options(args):
+        if value == "--":
+            break
+        if value == "--dir":
+            has_dir = True
+        elif value == "--agent":
+            agent_count += 1
+        elif value in scope_flags:
+            has_scope_flag = True
+    if agent_count > 1:
+        raise ValueError("multiple --agent selectors are not allowed")
+    if has_dir and agent_count:
+        raise ValueError("--dir cannot be used with --agent; pick one target selector")
+    if has_dir and has_scope_flag:
+        raise ValueError(
+            "--dir cannot be used with scope selectors; "
+            "an explicit directory is already a complete target"
+        )
+
+
 def normalize_scope_aliases(args: Sequence[str]) -> list[str]:
     normalized: list[str] = []
     end_of_options = False
@@ -1608,6 +1846,7 @@ def main(argv: list[str] | None = None) -> int:
             print(__version__)
             return 0
         validate_scope_selectors(args)
+        validate_target_selectors(args)
         args = normalize_scope_aliases(args)
         command = Skeel.parse(args)
         return asyncio.run(command.execute())

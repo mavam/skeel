@@ -20,6 +20,7 @@ from .fast_install import (
 )
 from .io import Command, ProcessResult, ProcessRunner, StepExecutor, StepOutcome
 from .manifest import DesiredSkill, Manifest, SkillSpec, SourceSpec
+from .targets import SkillTarget
 
 OutcomeFactory = Callable[[ProcessResult], StepOutcome]
 MIN_GH_VERSION = (2, 94, 0)
@@ -96,16 +97,77 @@ class InstalledSkill:
         return self.provenance.version_label or self.version
 
 
-@dataclass(frozen=True)
-class GhOptions:
-    directory: Path
+def custom_install_environment(
+    source: SourceSpec,
+    target: SkillTarget,
+    manifest: Manifest,
+) -> dict[str, str]:
+    del source
+    return {
+        "SKEEL_AGENT": target.agent or "",
+        "SKEEL_SCOPE": target.scope,
+        "SKEEL_SKILLS_DIR": str(target.directory),
+        "SKEEL_MANIFEST": str(manifest.path),
+    }
 
 
-def manual_install_steps(source: SourceSpec) -> list[SkillStep]:
-    return [
-        SkillStep(label=source.source, command=list(command), parallel=False)
-        for command in source.install
-    ]
+def manual_install_steps(
+    source: SourceSpec,
+    target: SkillTarget,
+    manifest: Manifest,
+) -> list[SkillStep]:
+    environment = custom_install_environment(source, target, manifest)
+    steps: list[SkillStep] = []
+    for index, command in enumerate(source.install):
+        verify = source.skills if index == len(source.install) - 1 else ()
+        steps.append(
+            SkillStep(
+                label=source.source,
+                command=list(command),
+                parallel=False,
+                executor=manual_install_executor(
+                    list(command),
+                    environment,
+                    source=source,
+                    target=target,
+                    verify=verify,
+                ),
+            )
+        )
+    return steps
+
+
+def manual_install_executor(
+    command: Command,
+    environment: Mapping[str, str],
+    *,
+    source: SourceSpec,
+    target: SkillTarget,
+    verify: Sequence[SkillSpec],
+) -> StepExecutor:
+    async def execute() -> ProcessResult:
+        result = await ProcessRunner().run(command, capture_output=True, env=environment)
+        if result.returncode:
+            return result
+        missing = [
+            skill.name
+            for skill in verify
+            if not (target.directory / skill.name / "SKILL.md").is_file()
+        ]
+        if missing:
+            names = ", ".join(sorted(missing))
+            return ProcessResult(
+                command=command,
+                returncode=1,
+                stderr=(
+                    f"custom install for {source.source} did not produce "
+                    f"skill(s) {names} in {target.directory}; "
+                    "portable installers must honor SKEEL_SKILLS_DIR"
+                ),
+            )
+        return result
+
+    return execute
 
 
 def source_requires_github_metadata(source: SourceSpec) -> bool:
@@ -143,8 +205,8 @@ def short_sha(sha: str) -> str:
     return sha[:7] if sha else ""
 
 
-def target_args(options: GhOptions) -> list[str]:
-    return ["--dir", str(options.directory)]
+def target_args(target: SkillTarget) -> list[str]:
+    return ["--dir", str(target.directory)]
 
 
 def parse_gh_version(output: str) -> tuple[int, int, int] | None:
@@ -170,7 +232,7 @@ async def ensure_minimum_gh_version(runner: ProcessRunner) -> None:
 
 def install_steps(
     source: SourceSpec,
-    options: GhOptions,
+    target: SkillTarget,
     *,
     current: Sequence[InstalledSkill] = (),
     prune: bool = False,
@@ -189,7 +251,7 @@ def install_steps(
         else:
             command.append("--all")
         command.append("--allow-hidden-dirs")
-        command.extend(target_args(options))
+        command.extend(target_args(target))
         command.append("--force")
         if pin:
             command.extend(["--pin", pin])
@@ -200,7 +262,7 @@ def install_steps(
                 fast_session,
                 source=source,
                 skill=skill,
-                options=options,
+                target=target,
                 command=command,
                 immutable_inventory=immutable_inventory,
                 prune=prune,
@@ -237,7 +299,7 @@ def fast_install_executor(
     *,
     source: SourceSpec,
     skill: SkillSpec | None,
-    options: GhOptions,
+    target: SkillTarget,
     command: Command,
     immutable_inventory: dict[str, tuple[str, str]] | None = None,
     prune: bool = False,
@@ -257,7 +319,7 @@ def fast_install_executor(
                 session.install,
                 source,
                 skill,
-                options.directory,
+                target.directory,
                 prune=prune,
             )
         except FastInstallError as error:
@@ -273,10 +335,10 @@ def fast_install_executor(
 
 
 async def installed_skills(
-    options: GhOptions,
+    target: SkillTarget,
     runner: ProcessRunner,
 ) -> tuple[InstalledSkill, ...]:
-    directory = options.directory
+    directory = target.directory
     if directory and not directory.exists():
         return ()
     await ensure_minimum_gh_version(runner)
@@ -288,7 +350,7 @@ async def installed_skills(
         "--json",
         "skillName,path,sourceURL,version,pinned",
     ]
-    command.extend(target_args(options))
+    command.extend(target_args(target))
     result = await runner.run(command, capture_output=True)
     if result.returncode:
         message = result.stderr.strip() or result.stdout.strip() or "gh skill list failed"
@@ -366,7 +428,7 @@ def scoped_steps(steps: Sequence[SkillStep], scope: str | None) -> list[SkillSte
 
 def update_steps(
     installed: Sequence[InstalledSkill],
-    options: GhOptions,
+    target: SkillTarget,
     *,
     manifest: Manifest,
 ) -> list[SkillStep]:
@@ -393,11 +455,11 @@ def update_steps(
         attributed = list(unique_installed_skills(attributed))
         excluded_paths.update(skill.path for skill in attributed)
 
-        step = install_steps(source, options, current=attributed, prune=True)[0]
+        step = install_steps(source, target, current=attributed, prune=True)[0]
         steps.append(
             replace(
                 step,
-                outcome=source_update_outcome(source, attributed, options),
+                outcome=source_update_outcome(source, attributed, target),
                 parallel=not supports_fast_install(source, None),
             )
         )
@@ -421,14 +483,14 @@ def update_steps(
                             session,
                             source=source,
                             skill=skill_spec,
-                            options=options,
+                            target=target,
                             command=command,
                         ),
                     )
                 )
                 continue
             if needs_source_reinstall(skill, source):
-                repair = install_step_for_skill(source, skill_spec, options)
+                repair = install_step_for_skill(source, skill_spec, target)
                 steps.append(replace(repair, label=label, outcome=update_outcome(skill)))
                 continue
 
@@ -441,7 +503,7 @@ def update_steps(
                     "update",
                     skill.update_name,
                     "--dir",
-                    str(options.directory),
+                    str(target.directory),
                     "--all",
                 ],
                 outcome=update_outcome(skill),
@@ -452,7 +514,7 @@ def update_steps(
 
 def pinned_prune_preview_steps(
     manifest: Manifest,
-    options: GhOptions,
+    target: SkillTarget,
 ) -> list[SkillStep]:
     steps: list[SkillStep] = []
     for source in manifest.sources:
@@ -466,7 +528,7 @@ def pinned_prune_preview_steps(
         for path in prunable_skill_directories(
             source=source.source,
             remote_skill_paths=repository_tree.skill_paths,
-            directory=options.directory,
+            directory=target.directory,
         ):
             steps.append(
                 SkillStep(
@@ -496,10 +558,10 @@ def unique_installed_skills(
 def install_step_for_skill(
     source: SourceSpec,
     skill: SkillSpec,
-    options: GhOptions,
+    target: SkillTarget,
 ) -> SkillStep:
     source = SourceSpec(source=source.source, skills=(skill,), pin=source.pin)
-    return install_steps(source, options)[0]
+    return install_steps(source, target)[0]
 
 
 def dynamic_repair_unknown_paths(
@@ -558,13 +620,13 @@ def fast_update_outcome(skill: InstalledSkill) -> OutcomeFactory:
 def source_update_outcome(
     source: SourceSpec,
     installed: Sequence[InstalledSkill],
-    options: GhOptions,
+    target: SkillTarget,
 ) -> OutcomeFactory:
     before = {skill.path: read_skill_provenance(skill.path) for skill in installed}
     known_paths = set(before)
 
     def outcome(result: ProcessResult) -> StepOutcome:
-        after = scan_source_inventory(source, options, known_paths=known_paths)
+        after = scan_source_inventory(source, target, known_paths=known_paths)
         classified = classify_source_inventory_change(before, after)
         if not result.removed_paths:
             return classified
@@ -580,7 +642,7 @@ def source_update_outcome(
 
 def scan_source_inventory(
     source: SourceSpec,
-    options: GhOptions,
+    target: SkillTarget,
     *,
     known_paths: set[Path] | None = None,
 ) -> dict[Path, SkillProvenance]:
@@ -589,7 +651,7 @@ def scan_source_inventory(
     try:
         candidates.update(
             path
-            for path in options.directory.iterdir()
+            for path in target.directory.iterdir()
             if path.is_dir() and (path / "SKILL.md").is_file()
         )
     except OSError:
