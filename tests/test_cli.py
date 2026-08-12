@@ -9,10 +9,11 @@ import pytest
 from skeel import __version__
 from skeel.cli import Runtime, configure_interrupt_handling, diff_skills, main
 from skeel.fast_install import RepositoryTree, ResolvedRef
-from skeel.gh import GhOptions, InstalledSkill, SkillStep, read_skill_provenance
+from skeel.gh import InstalledSkill, SkillStep, SkillTarget, read_skill_provenance
 from skeel.io import (
     ProcessResult,
     ProcessRunner,
+    RemovalGuard,
     StepOutcome,
     StepResult,
     Terminal,
@@ -462,7 +463,7 @@ sources:
 
     monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
 
-    assert main(["--json", "--manifest", str(path), "apply", "--dry-run"]) == 0
+    assert main(["--json", "--manifest", str(path), "apply", "--dry-run", "--prune"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert [step["label"] for step in payload["steps"]] == [
@@ -539,7 +540,7 @@ sources:
 
     monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
 
-    assert main(["--json", "--manifest", str(path), "apply", "--dry-run"]) == 0
+    assert main(["--json", "--manifest", str(path), "apply", "--dry-run", "--prune"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert [(step["label"], step["command"][:4]) for step in payload["steps"]] == [
@@ -636,6 +637,18 @@ sources:
         "tenzir/skills@tenzir-docs",
         "tenzir/skills@tenzir-ecs",
     ]
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["apply", "--prune", "--reinstall"],
+        ["apply", "--prune", "example/skills"],
+    ],
+)
+def test_apply_rejects_ignored_prune_modes(args, capsys) -> None:
+    assert main(args) == 2
+    assert "--prune cannot be used" in capsys.readouterr().err
 
 
 def test_apply_source_selector_does_not_remove_unselected_skills(
@@ -1489,7 +1502,7 @@ def test_diff_matches_namespaced_installed_skills_by_basename(monkeypatch) -> No
     monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
 
     diff = asyncio.run(
-        diff_skills(manifest, GhOptions(directory=Path("/tmp/skills")), ProcessRunner())
+        diff_skills(manifest, SkillTarget(directory=Path("/tmp/skills")), ProcessRunner())
     )
 
     assert [(skill.name, skill.source) for skill in diff.missing] == [
@@ -1576,6 +1589,8 @@ sources:
                 "name": "*",
                 "source": "example/skills",
                 "scope": "project",
+                "agent": "universal",
+                "directory": str(tmp_path / ".agents" / "skills"),
             }
         ],
         "extra": [],
@@ -1628,15 +1643,31 @@ def test_run_steps_carries_step_scope_into_results(tmp_path: Path) -> None:
     runtime = Runtime(
         manifest_path=Path("manifest.yaml"),
         manifest_required=False,
-        options=GhOptions(directory=tmp_path),
+        target=SkillTarget(directory=tmp_path),
         runner=Runner(),
         terminal=Terminal(json_output=True),
     )
     target = tmp_path / "obsolete"
     target.mkdir()
+    (target / "SKILL.md").write_text("test")
+    root_stat = tmp_path.stat()
+    target_stat = target.stat()
     steps = (
         SkillStep(label="install", command=["install"], scope="user"),
-        SkillStep(label="remove", command=["remove"], remove_path=target, scope="user"),
+        SkillStep(
+            label="remove",
+            command=["remove"],
+            remove_path=target,
+            removal_guard=RemovalGuard(
+                root=tmp_path,
+                relative_path=Path("obsolete"),
+                root_device=root_stat.st_dev,
+                root_inode=root_stat.st_ino,
+                skill_device=target_stat.st_dev,
+                skill_inode=target_stat.st_ino,
+            ),
+            scope="user",
+        ),
     )
 
     results, exit_code = asyncio.run(
@@ -1720,7 +1751,7 @@ def test_run_steps_executes_parallel_commands_concurrently(tmp_path: Path) -> No
     runtime = Runtime(
         manifest_path=Path("manifest.yaml"),
         manifest_required=False,
-        options=GhOptions(directory=tmp_path),
+        target=SkillTarget(directory=tmp_path),
         runner=runner,
         terminal=Terminal(json_output=True),
     )
@@ -1790,7 +1821,7 @@ def test_run_steps_can_remove_completed_current_progress_tasks(tmp_path: Path) -
     runtime = Runtime(
         manifest_path=Path("manifest.yaml"),
         manifest_required=False,
-        options=GhOptions(directory=tmp_path),
+        target=SkillTarget(directory=tmp_path),
         runner=Runner(),
         terminal=terminal,
     )
@@ -1853,7 +1884,7 @@ def test_run_steps_stops_launching_after_apply_failure(
     runtime = Runtime(
         manifest_path=Path("manifest.yaml"),
         manifest_required=False,
-        options=GhOptions(directory=tmp_path),
+        target=SkillTarget(directory=tmp_path),
         runner=runner,
         terminal=Terminal(json_output=True),
     )
@@ -1897,7 +1928,7 @@ def test_run_steps_keeps_manual_steps_as_sequential_barriers(tmp_path: Path) -> 
     runtime = Runtime(
         manifest_path=Path("manifest.yaml"),
         manifest_required=False,
-        options=GhOptions(directory=tmp_path),
+        target=SkillTarget(directory=tmp_path),
         runner=runner,
         terminal=Terminal(json_output=True),
     )
@@ -2305,7 +2336,7 @@ sources:
     payload = json.loads(capsys.readouterr().out)
     assert len(calls) == 1
     steps, runtime, kwargs = calls[0]
-    assert runtime.options.directory == project_target
+    assert runtime.target.directory == project_target
     assert kwargs == {
         "dry_run": False,
         "dry_run_action": "would update",
@@ -2693,3 +2724,486 @@ sources:
     )
 
     assert "selected skill is not installed: tenzir/skills@tenzir-docs" in capsys.readouterr().err
+
+
+def test_apply_prunes_through_symlinked_target_without_aborting(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  example/skills:
+    - missing
+""",
+    )
+    target = tmp_path / "real-skills"
+    obsolete = target / "obsolete"
+    obsolete.mkdir(parents=True)
+    (obsolete / "SKILL.md").write_text("---\nname: obsolete\n---\n")
+    linked_target = tmp_path / "linked-skills"
+    linked_target.symlink_to(target, target_is_directory=True)
+
+    async def fake_installed_skills(options, runner):
+        assert options.directory == linked_target
+        return (InstalledSkill(name="obsolete", path=linked_target / "obsolete"),)
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert (
+        main(
+            [
+                "--json",
+                "--manifest",
+                str(path),
+                "--dir",
+                str(linked_target),
+                "apply",
+                "--prune",
+                "--dry-run",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert [step["label"] for step in payload["steps"]] == [
+        "example/skills@missing",
+        "obsolete",
+    ]
+
+
+def test_apply_preserves_extras_without_prune(tmp_path, capsys, monkeypatch) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  example/skill-catalog:
+    - installed-helper
+""",
+    )
+    target = tmp_path / ".agents" / "skills"
+    target.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_installed_skills(options, runner):
+        return (
+            InstalledSkill(
+                name="installed-helper",
+                path=target / "installed-helper",
+                source_url="https://github.com/example/skill-catalog",
+            ),
+            InstalledSkill(name="hand-authored", path=target / "hand-authored"),
+        )
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "--manifest", str(path), "apply", "--dry-run"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["steps"] == []
+
+
+def test_remove_apply_deletes_only_the_selected_skill(tmp_path, capsys, monkeypatch) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  example/skill-catalog:
+    - keeper
+    - goner
+""",
+    )
+    target = tmp_path / ".agents" / "skills"
+    target.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_installed_skills(options, runner):
+        return (
+            InstalledSkill(
+                name="keeper",
+                path=target / "keeper",
+                source_url="https://github.com/example/skill-catalog",
+            ),
+            InstalledSkill(
+                name="goner",
+                path=target / "goner",
+                source_url="https://github.com/example/skill-catalog",
+            ),
+            InstalledSkill(name="hand-authored", path=target / "hand-authored"),
+        )
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "--manifest", str(path), "remove", "goner", "--apply", "--dry-run"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    remove_commands = [step["command"] for step in payload["steps"] if step["command"][0] == "rm"]
+    assert remove_commands == [["rm", "-rf", str(target / "goner")]]
+
+
+def test_remove_apply_preserves_whole_github_source_matching(tmp_path, capsys, monkeypatch) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  example/skills:
+    - alpha
+""",
+    )
+    target = tmp_path / ".agents" / "skills"
+    target.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_installed_skills(options, runner):
+        return (
+            InstalledSkill(
+                name="alpha",
+                path=target / "alpha",
+                source_url="https://github.com/example/skills",
+            ),
+            InstalledSkill(
+                name="beta",
+                path=target / "beta",
+                source_url="https://github.com/example/skills",
+            ),
+        )
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert (
+        main(
+            [
+                "--json",
+                "--manifest",
+                str(path),
+                "remove",
+                "--source",
+                "example/skills",
+                "--apply",
+                "--dry-run",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert [step["command"] for step in payload["steps"]] == [
+        ["rm", "-rf", str(target / "alpha")],
+        ["rm", "-rf", str(target / "beta")],
+    ]
+
+
+def test_remove_apply_rejects_invalid_install_only_custom_source(tmp_path, capsys) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  custom/installer:
+    install:
+      - install-custom
+""",
+    )
+    original = path.read_text()
+
+    assert (
+        main(
+            [
+                "--manifest",
+                str(path),
+                "remove",
+                "--source",
+                "custom/installer",
+                "--apply",
+            ]
+        )
+        == 2
+    )
+    assert "source custom/installer has no skills" in capsys.readouterr().err
+    assert path.read_text() == original
+
+
+def test_remove_apply_expands_custom_source_skills(tmp_path, capsys, monkeypatch) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  custom/installer:
+    skills:
+      - one
+      - two
+    install:
+      - install-custom
+""",
+    )
+    target = tmp_path / ".agents" / "skills"
+    target.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_installed_skills(options, runner):
+        return (
+            InstalledSkill(name="one", path=target / "one"),
+            InstalledSkill(name="two", path=target / "two"),
+            InstalledSkill(name="unmanaged", path=target / "unmanaged"),
+        )
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert (
+        main(
+            [
+                "--json",
+                "--manifest",
+                str(path),
+                "remove",
+                "--source",
+                "custom/installer",
+                "--apply",
+                "--dry-run",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)
+    remove_commands = [step["command"] for step in payload["steps"]]
+    assert remove_commands == [
+        ["rm", "-rf", str(target / "one")],
+        ["rm", "-rf", str(target / "two")],
+    ]
+
+
+def test_agents_command_lists_registry(capsys) -> None:
+    assert main(["agents", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    agents = {entry["agent"]: entry for entry in payload["agents"]}
+    assert agents["claude-code"]["project"] == ".claude/skills"
+    assert agents["pi"]["user"] == str(Path.home() / ".pi" / "agent" / "skills")
+    assert all(Path(agent["user"]).is_absolute() for agent in agents.values())
+    assert agents["universal"]["project"] == ".agents/skills"
+
+
+@pytest.mark.parametrize(
+    ("config_value", "expected_relative"),
+    [
+        ("~/claude-config", "claude-config/skills"),
+        ("claude-config", "claude-config/skills"),
+    ],
+)
+def test_agents_command_honors_claude_config_dir(
+    config_value, expected_relative, tmp_path, capsys, monkeypatch
+) -> None:
+    monkeypatch.setattr("skeel.cli.Path.home", lambda: tmp_path)
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", config_value)
+
+    assert main(["agents", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    claude = next(entry for entry in payload["agents"] if entry["agent"] == "claude-code")
+    assert claude["user"] == str(tmp_path / expected_relative)
+
+    assert main(["agents"]) == 0
+    claude_line = next(
+        line
+        for line in plain(capsys.readouterr().out).splitlines()
+        if line.startswith("claude-code")
+    )
+    assert f"~/{expected_relative}" in claude_line
+    assert "~/.claude/skills" not in claude_line
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--dir", "/tmp/x", "--agent", "claude-code", "list"],
+        ["--dir", "/tmp/x", "-g", "list"],
+        ["--dir", "/tmp/x", "--all", "list"],
+        ["--dir", "/tmp/x", "--scope", "user", "list"],
+        ["--agent", "pi", "--agent", "claude-code", "list"],
+    ],
+)
+def test_conflicting_target_selectors_are_rejected(args, capsys) -> None:
+    assert main(args) == 2
+    assert capsys.readouterr().err
+
+
+def test_agent_target_resolves_registry_directory(tmp_path, capsys, monkeypatch) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  example/skill-catalog:
+    - helper
+""",
+    )
+    monkeypatch.chdir(tmp_path)
+    seen: list[Path] = []
+
+    async def fake_installed_skills(options, runner):
+        seen.append(options.directory)
+        return ()
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "--manifest", str(path), "--agent", "claude-code", "diff"]) == 1
+
+    assert seen == [Path.cwd() / ".claude" / "skills"]
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["missing"][0]["agent"] == "claude-code"
+    assert payload["missing"][0]["directory"] == str(Path.cwd() / ".claude" / "skills")
+
+
+def test_dir_target_reports_custom_scope(tmp_path, capsys, monkeypatch) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  example/skill-catalog:
+    - helper
+""",
+    )
+    custom = tmp_path / "custom-skills"
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_installed_skills(options, runner):
+        assert options.directory == custom
+        return ()
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "--manifest", str(path), "--dir", str(custom), "diff"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["missing"][0]["scope"] == "custom"
+
+
+def test_universal_agent_preserves_project_shadowing(tmp_path, capsys, monkeypatch) -> None:
+    write_shadowed_scope(tmp_path, monkeypatch)
+
+    async def fake_installed_skills(options, runner):
+        return ()
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "--agent", "universal", "-a", "diff"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [warning["type"] for warning in payload["warnings"]] == ["shadowed-skill"]
+    assert [entry["scope"] for entry in payload["missing"]] == ["project"]
+
+
+def test_list_json_reports_complete_custom_target(tmp_path, capsys, monkeypatch) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  example/skill-catalog:
+    - helper
+""",
+    )
+    custom = tmp_path / "custom-skills"
+
+    async def fake_installed_skills(options, runner):
+        assert options.directory == custom
+        return ()
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "--manifest", str(path), "--dir", str(custom), "list"]) == 0
+    row = json.loads(capsys.readouterr().out)["skills"][0]
+    assert row["scope"] == "custom"
+    assert row["directory"] == str(custom)
+    assert "agent" not in row
+
+
+def test_list_json_reports_complete_universal_target(tmp_path, capsys, monkeypatch) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  example/skill-catalog:
+    - helper
+""",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_installed_skills(options, runner):
+        return ()
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "--manifest", str(path), "list"]) == 0
+    row = json.loads(capsys.readouterr().out)["skills"][0]
+    assert row["agent"] == "universal"
+    assert row["directory"] == str(tmp_path / ".agents" / "skills")
+
+
+def test_agent_scopes_warn_about_duplicates_without_skipping(tmp_path, capsys, monkeypatch) -> None:
+    home, project, project_target, user_target = write_shadowed_scope(tmp_path, monkeypatch)
+    (project / ".claude" / "skills").mkdir(parents=True)
+    (home / ".claude" / "skills").mkdir(parents=True)
+
+    async def fake_installed_skills(options, runner):
+        return ()
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "--agent", "claude-code", "-a", "diff"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [warning["type"] for warning in payload["warnings"]] == ["duplicate-skill"]
+    # Both scopes still report the skill; neither copy is skipped.
+    scopes = {entry["scope"] for entry in payload["missing"]}
+    assert scopes == {"project", "user"}
+
+
+def test_custom_install_receives_environment_and_verifies_output(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  slack-clacks/clacks:
+    skills:
+      - clacks
+    install:
+      - sh -c 'mkdir -p "$SKEEL_SKILLS_DIR/clacks";
+        printf %s "$SKEEL_SCOPE" > "$SKEEL_SKILLS_DIR/clacks/SKILL.md"'
+""",
+    )
+    target = tmp_path / ".agents" / "skills"
+    target.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_installed_skills(options, runner):
+        return ()
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "--manifest", str(path), "apply"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["failed"] == []
+    assert (target / "clacks" / "SKILL.md").read_text() == "project"
+
+
+def test_custom_install_fails_when_declared_skill_missing(tmp_path, capsys, monkeypatch) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  slack-clacks/clacks:
+    skills:
+      - clacks
+    install:
+      - "true"
+""",
+    )
+    target = tmp_path / ".agents" / "skills"
+    target.mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_installed_skills(options, runner):
+        return ()
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "--manifest", str(path), "apply"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["failed"] == ["slack-clacks/clacks"]
+    assert "SKEEL_SKILLS_DIR" in payload["steps"][0]["stderr"]

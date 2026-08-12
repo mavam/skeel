@@ -13,6 +13,7 @@ from typing import Any
 
 import yaml
 
+from .io import build_removal_guard, remove_guarded_directory
 from .manifest import SkillSpec, SourceSpec
 
 
@@ -390,11 +391,17 @@ def prune_removed_skills(
     repo_url = f"https://github.com/{source}"
     removed: list[Path] = []
     warnings: list[str] = []
+    root = directory.resolve()
     for candidate in prunable_skill_directories(
         source=source,
         remote_skill_paths=remote_skill_paths,
-        directory=directory,
+        directory=root,
     ):
+        try:
+            guard = build_removal_guard(root, candidate)
+        except (OSError, ValueError) as error:
+            warnings.append(f"could not guard {candidate} for pruning: {error}")
+            continue
         provenance = removable_skill_provenance(candidate)
         if provenance is None:
             continue
@@ -402,8 +409,8 @@ def prune_removed_skills(
         if installed_repo != repo_url or installed_path in remote_skill_paths:
             continue
         try:
-            shutil.rmtree(candidate)
-        except OSError as error:
+            remove_guarded_directory(candidate, guard)
+        except (OSError, ValueError) as error:
             warnings.append(f"could not prune {candidate}: {error}")
             continue
 

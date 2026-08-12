@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .gh import (
-    GhOptions,
     InstalledSkill,
     SkillStep,
     desired_aliases,
@@ -15,7 +14,9 @@ from .gh import (
     manual_install_steps,
     source_skill_label,
 )
+from .io import build_removal_guard
 from .manifest import DesiredSkill, Manifest, SkillSpec, SourceSpec, parse_skill
+from .targets import SkillTarget
 
 
 @dataclass(frozen=True)
@@ -51,11 +52,18 @@ class SkillShadowWarning:
     shadowed_scope: str
     project_label: str
     user_label: str
+    duplicate: bool = False
 
     @property
     def message(self) -> str:
         shadowed = shadow_scope_label(self.shadowed_scope)
         shadowing = shadow_scope_label(self.shadowing_scope)
+        if self.duplicate:
+            return (
+                f'warning: skill "{self.name}" is installed in both '
+                f"{shadowing} and {shadowed} scope; "
+                "the agent decides which copy takes precedence at runtime"
+            )
         return (
             f'warning: {shadowed} skill "{self.name}" is shadowed by '
             f'{shadowing} skill "{self.project_label}"; '
@@ -64,7 +72,7 @@ class SkillShadowWarning:
 
     def json(self) -> dict[str, object]:
         return {
-            "type": "shadowed-skill",
+            "type": "duplicate-skill" if self.duplicate else "shadowed-skill",
             "name": self.name,
             "shadowing_scope": self.shadowing_scope,
             "shadowed_scope": self.shadowed_scope,
@@ -328,6 +336,8 @@ class SkillDiff:
 @dataclass(frozen=True)
 class ListedSkill:
     scope: str
+    agent: str | None
+    directory: Path
     manifest_path: Path | None
     name: str
     source: str
@@ -341,6 +351,8 @@ class ListedSkill:
     def json(self) -> dict[str, object]:
         payload: dict[str, object] = {
             "scope": self.scope,
+            **({"agent": self.agent} if self.agent is not None else {}),
+            "directory": str(self.directory),
             "name": self.name,
             "source": self.source,
             "label": self.label,
@@ -397,6 +409,8 @@ def list_manifest_skills(
     installed: Sequence[InstalledSkill],
     *,
     scope: str,
+    directory: Path,
+    agent: str | None = None,
 ) -> tuple[ListedSkill, ...]:
     rows: list[ListedSkill] = []
     installed_index = installed_skill_index(installed)
@@ -407,6 +421,8 @@ def list_manifest_skills(
                 rows.extend(
                     ListedSkill(
                         scope=scope,
+                        agent=agent,
+                        directory=directory,
                         manifest_path=manifest.path,
                         name=match.basename,
                         source=source.source,
@@ -422,6 +438,8 @@ def list_manifest_skills(
                 rows.append(
                     ListedSkill(
                         scope=scope,
+                        agent=agent,
+                        directory=directory,
                         manifest_path=manifest.path,
                         name="*",
                         source=source.source,
@@ -438,6 +456,8 @@ def list_manifest_skills(
             rows.append(
                 ListedSkill(
                     scope=scope,
+                    agent=agent,
+                    directory=directory,
                     manifest_path=manifest.path,
                     name=desired.name,
                     source=desired.source,
@@ -455,15 +475,33 @@ def list_installed_skills(
     installed: Sequence[InstalledSkill],
     *,
     scope: str,
+    directory: Path,
+    agent: str | None = None,
 ) -> tuple[ListedSkill, ...]:
     if manifest is None:
-        return unmanaged_installed_skill_rows(installed, scope=scope, manifest_path=None)
+        return unmanaged_installed_skill_rows(
+            installed,
+            scope=scope,
+            directory=directory,
+            agent=agent,
+            manifest_path=None,
+        )
 
-    rows = list(list_manifest_skills(manifest, installed, scope=scope))
+    rows = list(
+        list_manifest_skills(
+            manifest,
+            installed,
+            scope=scope,
+            directory=directory,
+            agent=agent,
+        )
+    )
     rows.extend(
         unmanaged_installed_skill_rows(
             diff_installed_skills(manifest, installed).extra,
             scope=scope,
+            directory=directory,
+            agent=agent,
             manifest_path=None,
         )
     )
@@ -474,11 +512,15 @@ def unmanaged_installed_skill_rows(
     installed: Sequence[InstalledSkill],
     *,
     scope: str,
+    directory: Path,
+    agent: str | None = None,
     manifest_path: Path | None,
 ) -> tuple[ListedSkill, ...]:
     return tuple(
         ListedSkill(
             scope=scope,
+            agent=agent,
+            directory=directory,
             manifest_path=manifest_path,
             name=skill.basename,
             source=skill.github_source or skill.source_url,
@@ -494,21 +536,23 @@ def unmanaged_installed_skill_rows(
 
 def apply_plan(
     manifest: Manifest,
-    options: GhOptions,
+    target: SkillTarget,
     installed: Sequence[InstalledSkill],
     *,
     reinstall: bool = False,
     selector: ApplySelector | None = None,
+    prune: bool = False,
+    removals: Sequence[RemoveTarget] = (),
 ) -> list[SkillStep]:
     selected_manifest = filter_manifest(manifest, selector)
     if reinstall:
-        return list(iter_install_plan(selected_manifest, options))
+        return list(iter_install_plan(selected_manifest, target))
 
     diff = diff_installed_skills(selected_manifest, installed)
     install = list(
         iter_install_plan(
             selected_manifest,
-            options,
+            target,
             missing={(skill.source, skill.name) for skill in diff.missing},
             installed=installed,
         )
@@ -516,10 +560,48 @@ def apply_plan(
     if selector is not None:
         return install
 
-    remove = remove_steps(diff.extra, options)
+    # Extras are preserved by default; ``prune`` removes them all, while
+    # explicit ``removals`` (from `skeel remove --apply`) delete exactly the
+    # deselected skills.
+    if prune:
+        removable = diff.extra
+    else:
+        removable = tuple(
+            skill
+            for skill in diff.extra
+            if any(matches_remove_target(skill, removal) for removal in removals)
+        )
+    remove = remove_steps(removable, target)
     if has_missing_dynamic_source(selected_manifest, diff):
         return [*remove, *install]
     return [*install, *remove]
+
+
+def expand_remove_target(manifest: Manifest, removal: RemoveTarget) -> tuple[RemoveTarget, ...]:
+    """Preserve source matching and add declared names for metadata-less skills."""
+    if removal.skill is not None:
+        return (removal,)
+    source = next(
+        (source for source in manifest.sources if source.source == removal.source),
+        None,
+    )
+    if source is None:
+        return (removal,)
+    return (
+        removal,
+        *(RemoveTarget(source=removal.source, skill=skill.name) for skill in source.skills),
+    )
+
+
+def matches_remove_target(skill: InstalledSkill, removal: RemoveTarget) -> bool:
+    if removal.skill is None:
+        return skill.github_source == removal.source or (
+            not skill.github_source and skill.basename == Path(removal.source).name
+        )
+    name = parse_skill(removal.skill).name
+    if name not in {skill.name, skill.basename, skill.path.name}:
+        return False
+    return skill.github_source in ("", removal.source)
 
 
 def has_missing_dynamic_source(manifest: Manifest, diff: SkillDiff) -> bool:
@@ -586,7 +668,7 @@ MissingKey = tuple[str, str]
 
 def iter_install_plan(
     manifest: Manifest,
-    options: GhOptions,
+    target: SkillTarget,
     *,
     missing: set[MissingKey] | None = None,
     installed: Sequence[InstalledSkill] = (),
@@ -606,9 +688,9 @@ def iter_install_plan(
                 missing_key(source, skill.name) in missing for skill in source.skills
             ):
                 continue
-            yield from manual_install_steps(source)
+            yield from manual_install_steps(source, target, manifest)
             continue
-        yield from install_steps(source, options)
+        yield from install_steps(source, target)
 
 
 def missing_key(source: SourceSpec, name: str) -> MissingKey:
@@ -712,20 +794,15 @@ def installed_skill_matches_dynamic_source(skill: InstalledSkill, source: Source
     )
 
 
-def remove_steps(extra: Sequence[InstalledSkill], options: GhOptions) -> list[SkillStep]:
-    root = options.directory.resolve()
-    steps: list[SkillStep] = []
-    for skill in extra:
-        path = skill.path.resolve()
-        if path != root and not path.is_relative_to(root):
-            raise ValueError(f"refusing to remove skill outside target directory: {skill.path}")
-        steps.append(
-            SkillStep(
-                label=skill.label,
-                command=["rm", "-rf", str(skill.path)],
-                remove_path=skill.path,
-                kind="remove",
-                parallel=False,
-            )
+def remove_steps(extra: Sequence[InstalledSkill], target: SkillTarget) -> list[SkillStep]:
+    return [
+        SkillStep(
+            label=skill.label,
+            command=["rm", "-rf", str(skill.path)],
+            remove_path=skill.path,
+            removal_guard=build_removal_guard(target.directory, skill.path),
+            kind="remove",
+            parallel=False,
         )
-    return steps
+        for skill in extra
+    ]

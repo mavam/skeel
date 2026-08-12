@@ -11,7 +11,8 @@ Declarative agent skill management.
   commands, and compare managed skills against what's installed locally
 - **Add, apply, and update**: edit desired state, reconcile installed skills
   with live progress, and update declared installed skills
-- **Target flags**: choose local or global scope from the CLI
+- **Target flags**: choose project or user scope, a specific agent's skill
+  directory, or any explicit directory from the CLI
 - **JSON output**: pass `--json` for one machine-readable object on stdout
 
 ## 🚀 Quickstart
@@ -69,6 +70,42 @@ no-ops; `add` creates the manifest. Use `--manifest` or `SKEEL_MANIFEST` to use
 a manifest from another path. Because an explicit manifest path is not scoped,
 `-a` and `--all` are rejected when `--manifest` or `SKEEL_MANIFEST` is set.
 
+## 🎯 Agent Targets
+
+By default, skeel manages the universal `.agents/skills` directory. Use
+`--agent` to manage a specific agent's skill directory instead, or `--dir` for
+an explicit directory:
+
+```sh
+uvx skeel --agent claude-code apply
+uvx skeel --agent codex apply
+uvx skeel --agent pi -g list
+uvx skeel --dir ./custom/skills list
+```
+
+Agent names and directories mirror the GitHub CLI host registry. List them
+with:
+
+```sh
+uvx skeel agents
+```
+
+For an agent-specific target, project scope anchors at the enclosing git
+repository root so skills land where the agent discovers them, falling back to
+the working directory outside a repository. The `universal` target retains the
+default current-directory anchoring and project-over-user shadowing behavior.
+Manifests stay agent-neutral: the same `.agents/skills.yaml` drives every target.
+Agent-specific targets reconcile project and user scope independently; when the
+same skill appears in both, skeel warns and lets the agent decide runtime
+precedence. `--dir` is a complete target on its own and cannot be combined with
+`--agent` or scope selectors.
+
+Custom `install:` commands receive `SKEEL_AGENT`, `SKEEL_SCOPE`,
+`SKEEL_SKILLS_DIR`, and `SKEEL_MANIFEST` in their environment. `SKEEL_AGENT`
+is `universal` for the default target, the selected agent ID for `--agent`, and
+empty for `--dir`. Portable installers must honor `SKEEL_SKILLS_DIR`; skeel
+verifies that declared skills appear there and fails the step otherwise.
+
 ## ✨ Commands
 
 By default, every command operates on project scope. Use `-g`, `--user`,
@@ -108,7 +145,7 @@ uvx skeel list -a
 ### `diff`
 
 Compare desired state with installed skills. `+` rows would be installed by
-`apply`; `-` rows would be removed.
+`apply`; `-` rows would be removed by `apply --prune`.
 
 ```sh
 uvx skeel diff
@@ -123,13 +160,16 @@ uvx skeel diff
 
 ### `apply`
 
-Reconcile installed skills with the manifest. Missing skills are installed and
-extra skills are removed. Use `--reinstall` to run every manifest installer
-without diffing first, or `apply <source> [skill]` to target one source. A
-selector that does not match the manifest exits with an error.
+Reconcile installed skills with the manifest. Missing skills are installed;
+skills not declared in the manifest are preserved by default. Pass `--prune`
+to also remove undeclared extras. Pruning applies only to a full reconciliation;
+combine neither `--reinstall` nor a source selector with `--prune`. Use
+`--reinstall` to run every manifest installer without diffing first, or
+`apply <source> [skill]` to target one source. A selector that does not match
+the manifest exits with an error.
 
 ```sh
-uvx skeel apply --dry-run
+uvx skeel apply --dry-run --prune
 ```
 
 ```text
@@ -139,7 +179,7 @@ uvx skeel apply --dry-run
 ```
 
 ```sh
-uvx skeel apply
+uvx skeel apply --prune
 ```
 
 ```text
@@ -147,6 +187,13 @@ uvx skeel apply
 + ★ vectorize cloudflare/skills
 - ★ obsolete-skill
 ```
+
+Immediately before deleting anything, skeel verifies that the planned target
+and skill directories have not been replaced, requires a regular `SKILL.md`
+inside the target, refuses symlinked skills and paths outside the target, and
+never removes the target root. A target directory itself may be reached through
+a symlink; skeel pins its resolved destination while planning. These safeguards
+also cover skills pruned from pinned install-all sources during `update`.
 
 ### `update`
 
@@ -218,8 +265,9 @@ uvx skeel add mavam/quarto-brief --dry-run
 ### `remove`
 
 Remove an unambiguous skill name from the selected manifest. Pass `--apply` to
-reconcile immediately. A selector that does not match the manifest exits with an
-error.
+reconcile immediately; this deletes exactly the deselected skill and leaves
+other undeclared skills alone. A selector that does not match the manifest
+exits with an error.
 
 `add` and `remove` are intentionally asymmetric: adding starts from a source
 because skeel needs to know where to install from, while removing starts from a
@@ -240,7 +288,9 @@ When multiple sources declare the same skill name, disambiguate with `--source`:
 uvx skeel remove tenzir-docs --source tenzir/skills
 ```
 
-Omit the skill to remove the whole source selected by `--source`:
+Omit the skill to remove the whole source selected by `--source`. For custom
+installers, list every produced skill under `skills:` so `--apply` can identify
+the directories safely:
 
 ```sh
 uvx skeel remove --source mavam/quarto-brief --dry-run
@@ -248,6 +298,26 @@ uvx skeel remove --source mavam/quarto-brief --dry-run
 
 ```text
 ↳ mavam/quarto-brief .agents/skills.yaml
+```
+
+### `agents`
+
+List supported agents with their project and user skill directories. JSON
+output uses absolute user paths. Claude Code's user directory reflects
+`CLAUDE_CONFIG_DIR` when the variable is set; `~` expands to the home directory,
+and relative values are anchored there.
+
+```sh
+uvx skeel agents
+```
+
+```text
+github-copilot   .agents/skills   ~/.copilot/skills
+claude-code      .claude/skills   ~/.claude/skills
+codex            .agents/skills   ~/.codex/skills
+cursor           .agents/skills   ~/.cursor/skills
+pi               .pi/skills       ~/.pi/agent/skills
+...
 ```
 
 ### `path`

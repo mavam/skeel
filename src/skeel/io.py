@@ -5,8 +5,9 @@ import json
 import os
 import shlex
 import shutil
+import stat
 import sys
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
@@ -65,6 +66,16 @@ class StepOutcome:
 
 
 @dataclass(frozen=True)
+class RemovalGuard:
+    root: Path
+    relative_path: Path
+    root_device: int
+    root_inode: int
+    skill_device: int | None = None
+    skill_inode: int | None = None
+
+
+@dataclass(frozen=True)
 class StepResult:
     label: str
     command: Command
@@ -110,6 +121,9 @@ class SkillStepLike(Protocol):
 
     @property
     def remove_path(self) -> Path | None: ...
+
+    @property
+    def removal_guard(self) -> RemovalGuard | None: ...
 
     @property
     def kind(self) -> str: ...
@@ -248,6 +262,7 @@ class ProcessRunner:
         command: Command,
         *,
         capture_output: bool = False,
+        env: Mapping[str, str] | None = None,
     ) -> ProcessResult:
         pipe = asyncio.subprocess.PIPE
         stdout = pipe if capture_output else None
@@ -256,6 +271,7 @@ class ProcessRunner:
             *command,
             stdout=stdout,
             stderr=stderr,
+            env={**os.environ, **env} if env is not None else None,
         )
 
         try:
@@ -457,10 +473,11 @@ class Terminal:
         label: str,
         command: Command,
         path: Path,
+        guard: RemovalGuard,
         *,
         scope: str | None = None,
     ) -> StepResult:
-        returncode = self._remove_path(path)
+        returncode = self._remove_path(path, guard)
         return StepResult(
             label=label,
             command=command,
@@ -543,16 +560,88 @@ class Terminal:
             refresh=True,
         )
 
-    def _remove_path(self, path: Path) -> int:
+    def _remove_path(self, path: Path, guard: RemovalGuard) -> int:
         try:
-            if path.is_dir():
-                shutil.rmtree(path)
-            elif path.exists():
-                path.unlink()
-        except OSError as error:
+            remove_guarded_directory(path, guard)
+        except (OSError, ValueError) as error:
             self.error(str(error))
             return 1
         return 0
+
+
+def build_removal_guard(root: Path, path: Path) -> RemovalGuard:
+    """Validate a planned skill removal and capture filesystem identities."""
+    canonical_root = root.resolve()
+    if path.is_symlink():
+        raise ValueError(f"refusing to remove symlinked skill: {path}")
+    canonical_path = path.resolve()
+    if canonical_path == canonical_root or not canonical_path.is_relative_to(canonical_root):
+        raise ValueError(f"refusing to remove skill outside target directory: {path}")
+
+    skill_identity: tuple[int, int] | None = None
+    if path.exists():
+        if not (path / "SKILL.md").is_file():
+            raise ValueError(f"refusing to remove directory without SKILL.md: {path}")
+        skill_stat = path.stat(follow_symlinks=False)
+        skill_identity = (skill_stat.st_dev, skill_stat.st_ino)
+
+    root_stat = canonical_root.stat()
+    return RemovalGuard(
+        root=canonical_root,
+        relative_path=canonical_path.relative_to(canonical_root),
+        root_device=root_stat.st_dev,
+        root_inode=root_stat.st_ino,
+        skill_device=skill_identity[0] if skill_identity is not None else None,
+        skill_inode=skill_identity[1] if skill_identity is not None else None,
+    )
+
+
+def remove_guarded_directory(path: Path, guard: RemovalGuard) -> None:
+    """Remove a validated skill relative to its unchanged target directory."""
+    relative = guard.relative_path
+    if relative.is_absolute() or relative == Path(".") or ".." in relative.parts:
+        raise ValueError(f"refusing to remove invalid relative skill path: {path}")
+    if not shutil.rmtree.avoids_symlink_attacks:
+        raise OSError("safe directory removal is unavailable on this platform")
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        raise OSError("safe target directory opening is unavailable on this platform")
+
+    root_lstat = os.lstat(guard.root)
+    if stat.S_ISLNK(root_lstat.st_mode):
+        raise ValueError(f"refusing to remove through symlinked target: {guard.root}")
+
+    root_fd = os.open(guard.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        root_stat = os.fstat(root_fd)
+        if (root_stat.st_dev, root_stat.st_ino) != (guard.root_device, guard.root_inode):
+            raise ValueError(f"refusing to remove through replaced target: {guard.root}")
+        if not stat.S_ISDIR(root_stat.st_mode):
+            raise ValueError(f"refusing to remove through non-directory target: {guard.root}")
+
+        try:
+            skill_stat = os.stat(relative, dir_fd=root_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            if guard.skill_device is None and guard.skill_inode is None:
+                return
+            raise
+        if guard.skill_device is None or guard.skill_inode is None:
+            raise ValueError(f"refusing to remove skill that appeared after planning: {path}")
+        if (skill_stat.st_dev, skill_stat.st_ino) != (guard.skill_device, guard.skill_inode):
+            raise ValueError(f"refusing to remove replaced skill: {path}")
+        if not stat.S_ISDIR(skill_stat.st_mode):
+            kind = "symlinked" if stat.S_ISLNK(skill_stat.st_mode) else "non-directory"
+            raise ValueError(f"refusing to remove {kind} skill: {path}")
+        metadata_stat = os.stat(
+            relative / "SKILL.md",
+            dir_fd=root_fd,
+            follow_symlinks=False,
+        )
+        if not stat.S_ISREG(metadata_stat.st_mode):
+            raise ValueError(f"refusing to remove directory without regular SKILL.md: {path}")
+
+        shutil.rmtree(relative, dir_fd=root_fd)
+    finally:
+        os.close(root_fd)
 
 
 def failed_steps(steps: Sequence[StepResult]) -> list[StepResult]:
@@ -609,10 +698,13 @@ async def execute_skill_step(
     default_status: str | None,
 ) -> StepResult:
     if step.remove_path is not None:
+        if step.removal_guard is None:
+            raise ValueError(f"remove step lacks execution guard: {step.remove_path}")
         return runtime.terminal.execute_remove_step(
             step.label,
             step.command,
             step.remove_path,
+            step.removal_guard,
             scope=step.scope,
         )
     return await runtime.terminal.execute_step(

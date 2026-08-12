@@ -1,15 +1,14 @@
 import asyncio
-import shutil
 from pathlib import Path
 
 import pytest
 
 from skeel.fast_install import RepositoryTree, ResolvedRef
 from skeel.gh import (
-    GhOptions,
     InstalledSkill,
     SkillProvenance,
     SkillStep,
+    SkillTarget,
     classify_source_inventory_change,
     classify_update_output,
     fast_update_outcome,
@@ -61,8 +60,8 @@ def test_install_steps_cover_selected_and_all_skills() -> None:
     )
     dynamic = SourceSpec(source="mavam/quarto-brief", skills=(), install_all=True)
 
-    selected_step = install_steps(selected, GhOptions(directory=Path("/tmp/skills")))[0]
-    dynamic_step = install_steps(dynamic, GhOptions(directory=Path("/tmp/skills")))[0]
+    selected_step = install_steps(selected, SkillTarget(directory=Path("/tmp/skills")))[0]
+    dynamic_step = install_steps(dynamic, SkillTarget(directory=Path("/tmp/skills")))[0]
 
     assert selected_step.label == "openclaw/gogcli@gog"
     assert selected_step.command == [
@@ -87,7 +86,7 @@ def test_pinned_install_steps_use_archive_installer() -> None:
         pin="main",
     )
 
-    step = install_steps(source, GhOptions(directory=Path("/tmp/skills")))[0]
+    step = install_steps(source, SkillTarget(directory=Path("/tmp/skills")))[0]
 
     assert step.label == "tenzir/skills@tenzir-asim"
     assert step.command == ["gh", "api", "repos/tenzir/skills/tarball/main"]
@@ -103,7 +102,9 @@ def test_manual_install_steps() -> None:
         ),
     )
 
-    step = manual_install_steps(source)[0]
+    target = SkillTarget(directory=Path("/tmp/skills"), scope="project")
+    manifest = Manifest(path=Path("/tmp/skills.yaml"), sources=(source,))
+    step = manual_install_steps(source, target, manifest)[0]
 
     assert step.label == "slack-clacks/clacks"
     assert step.command == [
@@ -116,6 +117,7 @@ def test_manual_install_steps() -> None:
         "universal",
         "--force",
     ]
+    assert step.executor is not None
 
 
 def test_installed_skills_prefers_frontmatter_provenance(tmp_path: Path) -> None:
@@ -147,7 +149,7 @@ name: caveman
         ),
     )
 
-    skills = asyncio.run(installed_skills(GhOptions(directory=tmp_path / "skills"), runner))
+    skills = asyncio.run(installed_skills(SkillTarget(directory=tmp_path / "skills"), runner))
 
     assert skills[0].basename == "caveman"
     assert skills[0].update_name == "caveman"
@@ -168,7 +170,7 @@ def test_installed_skills_rejects_old_gh_version(tmp_path: Path) -> None:
     )
 
     with pytest.raises(RuntimeError, match="requires GitHub CLI 2.94.0"):
-        asyncio.run(installed_skills(GhOptions(directory=tmp_path / "skills"), runner))
+        asyncio.run(installed_skills(SkillTarget(directory=tmp_path / "skills"), runner))
 
     assert runner.calls == [["gh", "--version"]]
 
@@ -202,7 +204,7 @@ name: wrangler
         path=skill_path,
         provenance=read_skill_provenance(skill_path),
     )
-    step = update_steps([skill], GhOptions(directory=tmp_path), manifest=manifest)[0]
+    step = update_steps([skill], SkillTarget(directory=tmp_path), manifest=manifest)[0]
     write_skill(
         skill_path,
         """
@@ -251,7 +253,7 @@ name: metadata-repair
         provenance=read_skill_provenance(skill_path),
     )
 
-    step = update_steps([skill], GhOptions(directory=tmp_path), manifest=manifest)[0]
+    step = update_steps([skill], SkillTarget(directory=tmp_path), manifest=manifest)[0]
     write_skill(
         skill_path,
         """
@@ -315,7 +317,7 @@ name: manual-helper
         provenance=read_skill_provenance(skill_path),
     )
 
-    step = update_steps([skill], GhOptions(directory=tmp_path), manifest=manifest)[0]
+    step = update_steps([skill], SkillTarget(directory=tmp_path), manifest=manifest)[0]
 
     assert step.label == "example/manual-skills@manual-helper"
     assert step.command == [
@@ -362,7 +364,7 @@ name: tenzir-asim
         provenance=read_skill_provenance(skill_path),
     )
 
-    step = update_steps([skill], GhOptions(directory=tmp_path), manifest=manifest)[0]
+    step = update_steps([skill], SkillTarget(directory=tmp_path), manifest=manifest)[0]
 
     assert step.label == "tenzir/skills@tenzir-asim"
     assert step.command == ["gh", "api", "repos/tenzir/skills/tarball/main"]
@@ -571,7 +573,7 @@ def dynamic_manifest(*, pin: str | None = None) -> Manifest:
 def test_update_steps_refresh_unpinned_dynamic_source_once(tmp_path: Path) -> None:
     installed = [dynamic_skill(tmp_path, "skill-alpha"), dynamic_skill(tmp_path, "skill-beta")]
 
-    steps = update_steps(installed, GhOptions(directory=tmp_path), manifest=dynamic_manifest())
+    steps = update_steps(installed, SkillTarget(directory=tmp_path), manifest=dynamic_manifest())
 
     assert len(steps) == 1
     assert steps[0].label == "example/skill-catalog@*"
@@ -594,7 +596,7 @@ def test_update_steps_refresh_branch_pinned_dynamic_source_once(tmp_path: Path) 
 
     steps = update_steps(
         installed,
-        GhOptions(directory=tmp_path),
+        SkillTarget(directory=tmp_path),
         manifest=dynamic_manifest(pin="main"),
     )
 
@@ -608,7 +610,7 @@ def test_update_steps_refresh_branch_pinned_dynamic_source_once(tmp_path: Path) 
 def test_update_steps_exclude_dynamic_skills_from_per_skill_updates(tmp_path: Path) -> None:
     installed = [dynamic_skill(tmp_path, "skill-alpha"), dynamic_skill(tmp_path, "skill-beta")]
 
-    steps = update_steps(installed, GhOptions(directory=tmp_path), manifest=dynamic_manifest())
+    steps = update_steps(installed, SkillTarget(directory=tmp_path), manifest=dynamic_manifest())
 
     assert [step.label for step in steps] == ["example/skill-catalog@*"]
     assert all(step.command[:3] != ["gh", "skill", "update"] for step in steps)
@@ -629,7 +631,7 @@ def test_update_steps_keep_explicit_sources_per_skill(tmp_path: Path) -> None:
         ),
     )
 
-    steps = update_steps(installed, GhOptions(directory=tmp_path), manifest=manifest)
+    steps = update_steps(installed, SkillTarget(directory=tmp_path), manifest=manifest)
 
     assert [step.label for step in steps] == [
         "example/skill-catalog@skill-alpha",
@@ -644,7 +646,7 @@ def test_dynamic_source_filtered_to_skill_uses_targeted_install(tmp_path: Path) 
     assert source is not None
     manifest = Manifest(path=Path("manifest.yaml"), sources=(source,))
 
-    steps = update_steps(installed[:1], GhOptions(directory=tmp_path), manifest=manifest)
+    steps = update_steps(installed[:1], SkillTarget(directory=tmp_path), manifest=manifest)
 
     assert len(steps) == 1
     assert steps[0].label == "example/skill-catalog@skill-alpha"
@@ -656,7 +658,7 @@ def test_dynamic_source_missing_metadata_uses_unified_source_step(tmp_path: Path
     write_skill(path, "---\nname: metadata-repair\n---\n# Metadata Repair")
     installed = [InstalledSkill(name="metadata-repair", path=path)]
 
-    steps = update_steps(installed, GhOptions(directory=tmp_path), manifest=dynamic_manifest())
+    steps = update_steps(installed, SkillTarget(directory=tmp_path), manifest=dynamic_manifest())
 
     assert len(steps) == 1
     assert steps[0].label == "example/skill-catalog@*"
@@ -681,7 +683,7 @@ def test_multiple_dynamic_sources_do_not_share_orphan_attribution(tmp_path: Path
         ),
     )
 
-    steps = update_steps(installed, GhOptions(directory=tmp_path), manifest=manifest)
+    steps = update_steps(installed, SkillTarget(directory=tmp_path), manifest=manifest)
     write_skill(
         path,
         """
@@ -711,7 +713,7 @@ name: metadata-repair
 def test_source_update_outcome_classifies_inventory_changes(tmp_path: Path) -> None:
     source = dynamic_manifest().sources[0]
     skill = dynamic_skill(tmp_path, "skill-alpha")
-    options = GhOptions(directory=tmp_path)
+    options = SkillTarget(directory=tmp_path)
 
     unchanged = source_update_outcome(source, [skill], options)
     assert unchanged(ProcessResult(command=[], returncode=0)).status == "current"
@@ -793,7 +795,7 @@ def test_immutable_dynamic_source_skips_unchanged_archive(
         raise AssertionError("unchanged immutable source should not download an archive")
 
     monkeypatch.setattr("skeel.fast_install.download_archive", unexpected_download)
-    step = update_steps([skill], GhOptions(directory=tmp_path), manifest=manifest)[0]
+    step = update_steps([skill], SkillTarget(directory=tmp_path), manifest=manifest)[0]
     assert step.executor is not None
     assert step.outcome is not None
 
@@ -837,7 +839,7 @@ def test_immutable_pin_bump_refreshes_identical_skill_tree(
         return archive_root
 
     monkeypatch.setattr("skeel.fast_install.download_archive", download)
-    step = update_steps([skill], GhOptions(directory=tmp_path), manifest=manifest)[0]
+    step = update_steps([skill], SkillTarget(directory=tmp_path), manifest=manifest)[0]
     assert step.executor is not None
     assert step.outcome is not None
 
@@ -891,7 +893,7 @@ def test_immutable_install_all_refresh_discovers_missing_remote_skill(
         return archive_root
 
     monkeypatch.setattr("skeel.fast_install.download_archive", download)
-    step = update_steps([skill], GhOptions(directory=tmp_path), manifest=manifest)[0]
+    step = update_steps([skill], SkillTarget(directory=tmp_path), manifest=manifest)[0]
     assert step.executor is not None
     assert step.outcome is not None
 
@@ -938,7 +940,7 @@ def test_pinned_install_all_refresh_reports_pruned_skill(
             complete=True,
         ),
     )
-    step = update_steps(installed, GhOptions(directory=tmp_path), manifest=manifest)[0]
+    step = update_steps(installed, SkillTarget(directory=tmp_path), manifest=manifest)[0]
     assert step.executor is not None
     assert step.outcome is not None
 
@@ -983,15 +985,12 @@ def test_prune_warning_preserves_source_refresh_outcome(
             complete=True,
         ),
     )
-    remove_tree = shutil.rmtree
 
-    def fail_stale_remove(path: str | Path, *args, **kwargs) -> None:
-        if Path(path).name == "skill-beta":
-            raise PermissionError("permission denied")
-        remove_tree(path, *args, **kwargs)
+    def fail_stale_remove(path: Path, guard) -> None:
+        raise PermissionError("permission denied")
 
-    monkeypatch.setattr("skeel.fast_install.shutil.rmtree", fail_stale_remove)
-    step = update_steps(installed, GhOptions(directory=tmp_path), manifest=manifest)[0]
+    monkeypatch.setattr("skeel.fast_install.remove_guarded_directory", fail_stale_remove)
+    step = update_steps(installed, SkillTarget(directory=tmp_path), manifest=manifest)[0]
     assert step.executor is not None
     assert step.outcome is not None
 
