@@ -77,6 +77,42 @@ description: ASIM reference
     )
 
 
+def test_install_skill_replaces_symlink_without_removing_its_destination(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "home"
+    source = tmp_path / "source" / "skill-creator"
+    source.mkdir(parents=True)
+    (source / "SKILL.md").write_text("---\nname: skill-creator\n---\n# New\n")
+    universal = tmp_path / ".agents" / "skills" / "skill-creator"
+    universal.mkdir(parents=True)
+    (universal / "SKILL.md").write_text("# Universal\n")
+    target = tmp_path / ".claude" / "skills"
+    target.mkdir(parents=True)
+    (target / "skill-creator").symlink_to(universal, target_is_directory=True)
+    monkeypatch.setattr("skeel.fast_install.Path.home", lambda: home)
+
+    install_skill(
+        source="anthropics/skills",
+        pin="main",
+        ref="refs/heads/main",
+        tree_sha="tree123",
+        skill=DiscoveredSkill(
+            name="skill-creator",
+            path="skills/skill-creator",
+            directory=source,
+        ),
+        directory=target,
+    )
+
+    installed = target / "skill-creator"
+    assert not installed.is_symlink()
+    assert installed.is_dir()
+    assert "# New" in (installed / "SKILL.md").read_text()
+    assert (universal / "SKILL.md").read_text() == "# Universal\n"
+
+
 def test_select_skill_matches_hidden_and_namespaced_paths(tmp_path: Path) -> None:
     hidden = DiscoveredSkill(name="gog", path=".agents/skills/gog", directory=tmp_path)
     namespaced = DiscoveredSkill(
