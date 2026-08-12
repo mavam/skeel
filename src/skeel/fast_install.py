@@ -312,7 +312,9 @@ def install_skill(
 ) -> None:
     owner, repo = source.split("/", 1)
     target = directory / skill.name
-    if target.exists():
+    if target.is_symlink():
+        target.unlink()
+    elif target.exists():
         if target.is_dir():
             shutil.rmtree(target)
         else:
