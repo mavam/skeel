@@ -1,10 +1,10 @@
 ---
-prs:
-  - 21
 title: Agent-specific skill targets
 type: feature
 authors:
   - mavam
+prs:
+  - 21
 created: 2026-08-12T05:40:43.561556Z
 ---
 
@@ -13,8 +13,8 @@ with any command to target an agent's own skill directory, or `--dir` for an
 explicit directory:
 
 ```sh
-skeel --agent claude-code apply
-skeel --agent claude-code -g list
+skeel --agent codex apply
+skeel --agent pi -g list
 skeel --dir ./custom/skills diff
 ```
 

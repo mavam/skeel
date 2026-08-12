@@ -1,10 +1,10 @@
 ---
-prs:
-  - 21
 title: Safe reconciliation with opt-in pruning
 type: breaking
 authors:
   - mavam
+prs:
+  - 21
 created: 2026-08-12T05:40:32.78477Z
 ---
 
