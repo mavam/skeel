@@ -1,4 +1,6 @@
 ---
+prs:
+  - 21
 title: Safe reconciliation with opt-in pruning
 type: breaking
 authors:

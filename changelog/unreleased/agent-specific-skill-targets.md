@@ -1,4 +1,6 @@
 ---
+prs:
+  - 21
 title: Agent-specific skill targets
 type: feature
 authors:
