@@ -72,6 +72,7 @@ def test_custom_source_removal_expands_to_declared_skills(tmp_path: Path) -> Non
     removals = expand_remove_target(manifest, RemoveTarget(source=source.source))
 
     assert removals == (
+        RemoveTarget(source=source.source),
         RemoveTarget(source=source.source, skill="one"),
         RemoveTarget(source=source.source, skill="two"),
     )
@@ -122,6 +123,22 @@ def test_remove_steps_refuses_symlinked_skills(tmp_path: Path) -> None:
         remove_steps((skill,), target)
 
 
+def test_remove_steps_accepts_symlinked_target_directory(tmp_path: Path) -> None:
+    root = tmp_path / "skills"
+    write_skill(root / "helper")
+    linked_root = tmp_path / "linked-skills"
+    linked_root.symlink_to(root, target_is_directory=True)
+
+    steps = remove_steps(
+        (InstalledSkill(name="helper", path=linked_root / "helper"),),
+        SkillTarget(directory=linked_root, scope="project"),
+    )
+
+    assert len(steps) == 1
+    assert steps[0].removal_guard is not None
+    assert steps[0].removal_guard.root == root.resolve()
+
+
 def test_remove_steps_requires_skill_md(tmp_path: Path) -> None:
     root = tmp_path / "skills"
     (root / "not-a-skill").mkdir(parents=True)
@@ -140,6 +157,28 @@ def test_remove_steps_allows_real_skill_directories(tmp_path: Path) -> None:
     skill = InstalledSkill(name="helper", path=root / "helper")
     steps = remove_steps((skill,), target)
     assert [step.remove_path for step in steps] == [root / "helper"]
+
+
+def test_remove_step_revalidates_skill_md_at_execution(tmp_path: Path) -> None:
+    root = tmp_path / "skills"
+    skill_path = root / "helper"
+    write_skill(skill_path)
+    step = remove_steps(
+        (InstalledSkill(name="helper", path=skill_path),),
+        SkillTarget(directory=root, scope="project"),
+    )[0]
+    assert step.removal_guard is not None
+    (skill_path / "SKILL.md").unlink()
+
+    result = Terminal(json_output=True).execute_remove_step(
+        step.label,
+        step.command,
+        step.remove_path,
+        step.removal_guard,
+    )
+
+    assert result.returncode == 1
+    assert skill_path.is_dir()
 
 
 def test_remove_step_refuses_replaced_skill_at_execution(tmp_path: Path) -> None:

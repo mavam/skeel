@@ -569,6 +569,33 @@ class Terminal:
         return 0
 
 
+def build_removal_guard(root: Path, path: Path) -> RemovalGuard:
+    """Validate a planned skill removal and capture filesystem identities."""
+    canonical_root = root.resolve()
+    if path.is_symlink():
+        raise ValueError(f"refusing to remove symlinked skill: {path}")
+    canonical_path = path.resolve()
+    if canonical_path == canonical_root or not canonical_path.is_relative_to(canonical_root):
+        raise ValueError(f"refusing to remove skill outside target directory: {path}")
+
+    skill_identity: tuple[int, int] | None = None
+    if path.exists():
+        if not (path / "SKILL.md").is_file():
+            raise ValueError(f"refusing to remove directory without SKILL.md: {path}")
+        skill_stat = path.stat(follow_symlinks=False)
+        skill_identity = (skill_stat.st_dev, skill_stat.st_ino)
+
+    root_stat = canonical_root.stat()
+    return RemovalGuard(
+        root=canonical_root,
+        relative_path=canonical_path.relative_to(canonical_root),
+        root_device=root_stat.st_dev,
+        root_inode=root_stat.st_ino,
+        skill_device=skill_identity[0] if skill_identity is not None else None,
+        skill_inode=skill_identity[1] if skill_identity is not None else None,
+    )
+
+
 def remove_guarded_directory(path: Path, guard: RemovalGuard) -> None:
     """Remove a validated skill relative to its unchanged target directory."""
     relative = guard.relative_path

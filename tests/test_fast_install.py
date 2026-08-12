@@ -16,6 +16,7 @@ from skeel.fast_install import (
     fetch_repository_tree,
     install_skill,
     prune_removed_skills,
+    removable_skill_provenance,
     remove_lockfile_skill,
     select_skill,
 )
@@ -553,6 +554,50 @@ name: skill-beta
     assert stale_dir.exists()
 
 
+def test_prune_refuses_skill_replaced_after_provenance_check(tmp_path: Path, monkeypatch) -> None:
+    target = tmp_path / "target"
+    stale_dir = target / "skill-beta"
+    stale_dir.mkdir(parents=True)
+    metadata = """---
+metadata:
+  github-repo: https://github.com/example/skill-catalog
+  github-path: skills/skill-beta
+name: skill-beta
+---
+# Skill Beta
+"""
+    (stale_dir / "SKILL.md").write_text(metadata)
+    original = target / "skill-beta-original"
+    calls = 0
+
+    def replace_after_guard(candidate: Path):
+        nonlocal calls
+        calls += 1
+        provenance = removable_skill_provenance(candidate)
+        if calls == 2:
+            candidate.rename(original)
+            candidate.mkdir()
+            (candidate / "SKILL.md").write_text(metadata)
+        return provenance
+
+    monkeypatch.setattr(
+        "skeel.fast_install.removable_skill_provenance",
+        replace_after_guard,
+    )
+
+    result = prune_removed_skills(
+        source="example/skill-catalog",
+        remote_skill_paths=frozenset(),
+        directory=target,
+    )
+
+    assert result.removed_paths == ()
+    assert len(result.warnings) == 1
+    assert "replaced skill" in result.warnings[0]
+    assert original.is_dir()
+    assert stale_dir.is_dir()
+
+
 def test_prune_failure_returns_warning(tmp_path: Path, monkeypatch) -> None:
     target = tmp_path / "target"
     stale_dir = target / "skill-beta"
@@ -568,10 +613,10 @@ name: skill-beta
 """
     )
 
-    def fail_remove(path: Path) -> None:
+    def fail_remove(path: Path, guard) -> None:
         raise PermissionError("permission denied")
 
-    monkeypatch.setattr("skeel.fast_install.shutil.rmtree", fail_remove)
+    monkeypatch.setattr("skeel.fast_install.remove_guarded_directory", fail_remove)
 
     result = prune_removed_skills(
         source="example/skill-catalog",

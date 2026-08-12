@@ -14,7 +14,7 @@ from .gh import (
     manual_install_steps,
     source_skill_label,
 )
-from .io import RemovalGuard
+from .io import build_removal_guard
 from .manifest import DesiredSkill, Manifest, SkillSpec, SourceSpec, parse_skill
 from .targets import SkillTarget
 
@@ -578,13 +578,19 @@ def apply_plan(
 
 
 def expand_remove_target(manifest: Manifest, removal: RemoveTarget) -> tuple[RemoveTarget, ...]:
-    """Expand a whole-source removal to names custom installers can be matched by."""
+    """Preserve source matching and add declared names for metadata-less skills."""
     if removal.skill is not None:
         return (removal,)
-    source = next(source for source in manifest.sources if source.source == removal.source)
-    if not source.skills:
+    source = next(
+        (source for source in manifest.sources if source.source == removal.source),
+        None,
+    )
+    if source is None:
         return (removal,)
-    return tuple(RemoveTarget(source=removal.source, skill=skill.name) for skill in source.skills)
+    return (
+        removal,
+        *(RemoveTarget(source=removal.source, skill=skill.name) for skill in source.skills),
+    )
 
 
 def matches_remove_target(skill: InstalledSkill, removal: RemoveTarget) -> bool:
@@ -789,42 +795,14 @@ def installed_skill_matches_dynamic_source(skill: InstalledSkill, source: Source
 
 
 def remove_steps(extra: Sequence[InstalledSkill], target: SkillTarget) -> list[SkillStep]:
-    if not extra:
-        return []
-    if target.directory.is_symlink():
-        raise ValueError(f"refusing to remove through symlinked target: {target.directory}")
-    root = target.directory.resolve()
-    candidates: list[tuple[InstalledSkill, Path, tuple[int, int] | None]] = []
-    for skill in extra:
-        if skill.path.is_symlink():
-            raise ValueError(f"refusing to remove symlinked skill: {skill.path}")
-        path = skill.path.resolve()
-        if path == root or not path.is_relative_to(root):
-            raise ValueError(f"refusing to remove skill outside target directory: {skill.path}")
-        skill_identity: tuple[int, int] | None = None
-        if skill.path.exists():
-            if not (skill.path / "SKILL.md").is_file():
-                raise ValueError(f"refusing to remove directory without SKILL.md: {skill.path}")
-            skill_stat = skill.path.stat(follow_symlinks=False)
-            skill_identity = (skill_stat.st_dev, skill_stat.st_ino)
-        candidates.append((skill, path, skill_identity))
-
-    root_stat = root.stat()
     return [
         SkillStep(
             label=skill.label,
             command=["rm", "-rf", str(skill.path)],
             remove_path=skill.path,
-            removal_guard=RemovalGuard(
-                root=root,
-                relative_path=path.relative_to(root),
-                root_device=root_stat.st_dev,
-                root_inode=root_stat.st_ino,
-                skill_device=skill_identity[0] if skill_identity is not None else None,
-                skill_inode=skill_identity[1] if skill_identity is not None else None,
-            ),
+            removal_guard=build_removal_guard(target.directory, skill.path),
             kind="remove",
             parallel=False,
         )
-        for skill, path, skill_identity in candidates
+        for skill in extra
     ]

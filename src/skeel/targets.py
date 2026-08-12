@@ -137,10 +137,22 @@ def project_base(cwd: Path, *, agent: str | None) -> Path:
     return git_root(cwd) or cwd
 
 
+def agent_user_directory_override(host: AgentHost, home: Path) -> Path | None:
+    if host.id != "claude-code" or not (config_dir := os.environ.get(CLAUDE_CONFIG_DIR_ENV)):
+        return None
+    if config_dir == "~":
+        path = home
+    elif config_dir.startswith("~/"):
+        path = home / config_dir[2:]
+    else:
+        path = Path(config_dir).expanduser()
+        if not path.is_absolute():
+            path = home / path
+    return path / "skills"
+
+
 def agent_user_directory(host: AgentHost, home: Path) -> Path:
-    if host.id == "claude-code" and (config_dir := os.environ.get(CLAUDE_CONFIG_DIR_ENV)):
-        return Path(config_dir) / "skills"
-    return home / host.user_dir
+    return agent_user_directory_override(host, home) or home / host.user_dir
 
 
 def resolve_target(

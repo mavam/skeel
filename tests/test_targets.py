@@ -67,6 +67,24 @@ def test_claude_code_user_target_honors_config_dir(tmp_path: Path, monkeypatch) 
     assert target.directory == tmp_path / "claude-config" / "skills"
 
 
+@pytest.mark.parametrize(
+    ("config", "expected"),
+    [
+        ("~/claude-config", Path("claude-config/skills")),
+        ("claude-config", Path("claude-config/skills")),
+    ],
+)
+def test_claude_code_user_target_expands_config_dir(
+    tmp_path: Path, monkeypatch, config: str, expected: Path
+) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", config)
+
+    target = resolve_target(scope="user", agent="claude-code", cwd=tmp_path, home=home)
+
+    assert target.directory == home / expected
+
+
 def test_explicit_directory_is_custom_scope(tmp_path: Path) -> None:
     target = resolve_target(
         scope="project",

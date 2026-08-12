@@ -76,7 +76,6 @@ from .reconcile import (
 )
 from .targets import (
     AGENT_HOSTS,
-    CLAUDE_CONFIG_DIR_ENV,
     AgentHost,
     SkillTarget,
     agent_user_directory,
@@ -307,7 +306,7 @@ def build_runtime_for_scope(command: CommonOptions, *, scope: str) -> Runtime:
     )
     if scope == "user":
         manifest_base: Path | None = Path.home()
-    elif target.kind == "agent":
+    elif not target.universal and target.kind == "agent":
         # Named agents anchor at the git root so manifest and target stay
         # co-anchored regardless of the working directory.
         manifest_base = project_base(Path.cwd(), agent=target.agent)
@@ -448,7 +447,10 @@ async def list_scope_inventories(selection: ListSelection) -> tuple[ScopeInvento
 def shadow_user_inventories(
     inventories: Sequence[ScopeInventory],
 ) -> ShadowedInventories:
-    if any(inventory.runtime.target.kind == "agent" for inventory in inventories):
+    if any(
+        not inventory.runtime.target.universal and inventory.runtime.target.kind == "agent"
+        for inventory in inventories
+    ):
         return duplicate_scope_inventories(inventories)
     project = next(
         (inventory for inventory in inventories if inventory.scope == "project"),
@@ -1380,10 +1382,15 @@ async def command_update(command: UpdateOptions) -> int:
     return exit_code
 
 
-def displayed_agent_user_directory(host: AgentHost) -> str:
-    if host.id == "claude-code" and os.environ.get(CLAUDE_CONFIG_DIR_ENV):
-        return str(agent_user_directory(host, Path.home()))
-    return host.user_dir
+def displayed_agent_user_directory(host: AgentHost) -> Path:
+    return agent_user_directory(host, Path.home())
+
+
+def display_home_path(path: Path, home: Path) -> str:
+    try:
+        return str(Path("~") / path.relative_to(home))
+    except ValueError:
+        return str(path)
 
 
 async def command_agents(command: CommonOptions) -> int:
@@ -1396,7 +1403,7 @@ async def command_agents(command: CommonOptions) -> int:
                         "agent": host.id,
                         "name": host.name,
                         "project": host.project_dir,
-                        "user": displayed_agent_user_directory(host),
+                        "user": str(displayed_agent_user_directory(host)),
                     }
                     for host in AGENT_HOSTS
                 ]
@@ -1407,9 +1414,7 @@ async def command_agents(command: CommonOptions) -> int:
     id_width = max(len(host.id) for host in AGENT_HOSTS)
     project_width = max(len(host.project_dir) for host in AGENT_HOSTS)
     for host in AGENT_HOSTS:
-        user_dir = displayed_agent_user_directory(host)
-        if not (host.id == "claude-code" and os.environ.get(CLAUDE_CONFIG_DIR_ENV)):
-            user_dir = f"~/{user_dir}"
+        user_dir = display_home_path(displayed_agent_user_directory(host), Path.home())
         sys.stdout.write(
             f"{host.id:<{id_width}}  {host.project_dir:<{project_width}}  {user_dir}\n"
         )

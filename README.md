@@ -101,9 +101,10 @@ precedence. `--dir` is a complete target on its own and cannot be combined with
 `--agent` or scope selectors.
 
 Custom `install:` commands receive `SKEEL_AGENT`, `SKEEL_SCOPE`,
-`SKEEL_SKILLS_DIR`, and `SKEEL_MANIFEST` in their environment. Portable
-installers must honor `SKEEL_SKILLS_DIR`; skeel verifies that declared skills
-appear there and fails the step otherwise.
+`SKEEL_SKILLS_DIR`, and `SKEEL_MANIFEST` in their environment. `SKEEL_AGENT`
+is `universal` for the default target, the selected agent ID for `--agent`, and
+empty for `--dir`. Portable installers must honor `SKEEL_SKILLS_DIR`; skeel
+verifies that declared skills appear there and fails the step otherwise.
 
 ## ✨ Commands
 
@@ -189,10 +190,10 @@ uvx skeel apply --prune
 
 Immediately before deleting anything, skeel verifies that the planned target
 and skill directories have not been replaced, requires a regular `SKILL.md`
-inside the target, refuses symlinks and paths outside the target, and never
-removes the target root. Pruning of skills
-removed upstream from pinned install-all sources is managed-source drift, not
-an extra, and stays always-on during `update`.
+inside the target, refuses symlinked skills and paths outside the target, and
+never removes the target root. A target directory itself may be reached through
+a symlink; skeel pins its resolved destination while planning. These safeguards
+also cover skills pruned from pinned install-all sources during `update`.
 
 ### `update`
 
@@ -287,7 +288,9 @@ When multiple sources declare the same skill name, disambiguate with `--source`:
 uvx skeel remove tenzir-docs --source tenzir/skills
 ```
 
-Omit the skill to remove the whole source selected by `--source`:
+Omit the skill to remove the whole source selected by `--source`. For custom
+installers, list every produced skill under `skills:` so `--apply` can identify
+the directories safely:
 
 ```sh
 uvx skeel remove --source mavam/quarto-brief --dry-run
@@ -299,8 +302,10 @@ uvx skeel remove --source mavam/quarto-brief --dry-run
 
 ### `agents`
 
-List supported agents with their project and user skill directories. Claude
-Code's user directory reflects `CLAUDE_CONFIG_DIR` when the variable is set.
+List supported agents with their project and user skill directories. JSON
+output uses absolute user paths. Claude Code's user directory reflects
+`CLAUDE_CONFIG_DIR` when the variable is set; `~` expands to the home directory,
+and relative values are anchored there.
 
 ```sh
 uvx skeel agents

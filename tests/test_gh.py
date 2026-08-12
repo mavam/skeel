@@ -1,5 +1,4 @@
 import asyncio
-import shutil
 from pathlib import Path
 
 import pytest
@@ -986,14 +985,11 @@ def test_prune_warning_preserves_source_refresh_outcome(
             complete=True,
         ),
     )
-    remove_tree = shutil.rmtree
 
-    def fail_stale_remove(path: str | Path, *args, **kwargs) -> None:
-        if Path(path).name == "skill-beta":
-            raise PermissionError("permission denied")
-        remove_tree(path, *args, **kwargs)
+    def fail_stale_remove(path: Path, guard) -> None:
+        raise PermissionError("permission denied")
 
-    monkeypatch.setattr("skeel.fast_install.shutil.rmtree", fail_stale_remove)
+    monkeypatch.setattr("skeel.fast_install.remove_guarded_directory", fail_stale_remove)
     step = update_steps(installed, SkillTarget(directory=tmp_path), manifest=manifest)[0]
     assert step.executor is not None
     assert step.outcome is not None

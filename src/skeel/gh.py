@@ -18,7 +18,15 @@ from .fast_install import (
     prunable_skill_directories,
     supports_fast_install,
 )
-from .io import Command, ProcessResult, ProcessRunner, RemovalGuard, StepExecutor, StepOutcome
+from .io import (
+    Command,
+    ProcessResult,
+    ProcessRunner,
+    RemovalGuard,
+    StepExecutor,
+    StepOutcome,
+    build_removal_guard,
+)
 from .manifest import DesiredSkill, Manifest, SkillSpec, SourceSpec
 from .targets import SkillTarget
 
@@ -536,6 +544,7 @@ def pinned_prune_preview_steps(
                     label=source_skill_label(source.source, path.name),
                     command=["rm", "-rf", str(path)],
                     remove_path=path,
+                    removal_guard=build_removal_guard(target.directory, path),
                     kind="remove",
                     parallel=False,
                 )
