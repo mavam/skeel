@@ -1,0 +1,9 @@
+created: 2026-08-12
+title: Reliable agent applies over symlinked skills
+intro: >-
+  Skeel now reconciles agent-specific skill directories that contain symlinks to universal
+  skills. Applying Claude Code user skills replaces each symlink safely without changing
+  its destination.
+source:
+  mode: sync-stable-queue
+  previous_stable: v2.0.0
