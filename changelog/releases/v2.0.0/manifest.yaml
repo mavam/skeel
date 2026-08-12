@@ -1,0 +1,10 @@
+created: 2026-08-12
+title: Agent-specific skill targets and safe reconciliation
+intro: >-
+  Skeel now manages skills for individual agents, with dedicated targets, discovery-aware
+  paths, and portable custom installers. It also makes reconciliation safe by preserving
+  undeclared skills by default while providing explicit pruning and execution-time
+  deletion safeguards.
+source:
+  mode: sync-stable-queue
+  previous_stable: v1.1.0
