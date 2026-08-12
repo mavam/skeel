@@ -3,8 +3,9 @@ from pathlib import Path
 import pytest
 
 from skeel.gh import InstalledSkill
+from skeel.io import Terminal
 from skeel.manifest import Manifest, SkillSpec, SourceSpec
-from skeel.reconcile import RemoveTarget, apply_plan, remove_steps
+from skeel.reconcile import RemoveTarget, apply_plan, expand_remove_target, remove_steps
 from skeel.targets import SkillTarget
 
 
@@ -55,6 +56,25 @@ def test_apply_removals_delete_exactly_the_selected_skill(tmp_path: Path) -> Non
     )
     removes = [step for step in plan if step.kind == "remove"]
     assert [step.remove_path for step in removes] == [tmp_path / "deselected"]
+
+
+def test_custom_source_removal_expands_to_declared_skills(tmp_path: Path) -> None:
+    source = SourceSpec(
+        source="custom/installer",
+        skills=(
+            SkillSpec(spec="one", name="one"),
+            SkillSpec(spec="two", name="two"),
+        ),
+        install=(("install-custom",),),
+    )
+    manifest = manifest_with(source)
+
+    removals = expand_remove_target(manifest, RemoveTarget(source=source.source))
+
+    assert removals == (
+        RemoveTarget(source=source.source, skill="one"),
+        RemoveTarget(source=source.source, skill="two"),
+    )
 
 
 def test_apply_removals_for_whole_source(tmp_path: Path) -> None:
@@ -120,3 +140,59 @@ def test_remove_steps_allows_real_skill_directories(tmp_path: Path) -> None:
     skill = InstalledSkill(name="helper", path=root / "helper")
     steps = remove_steps((skill,), target)
     assert [step.remove_path for step in steps] == [root / "helper"]
+
+
+def test_remove_step_refuses_replaced_skill_at_execution(tmp_path: Path) -> None:
+    root = tmp_path / "skills"
+    skill_path = root / "helper"
+    write_skill(skill_path)
+    step = remove_steps(
+        (InstalledSkill(name="helper", path=skill_path),),
+        SkillTarget(directory=root, scope="project"),
+    )[0]
+    assert step.removal_guard is not None
+
+    original = root / "helper-original"
+    skill_path.rename(original)
+    replacement = tmp_path / "replacement"
+    write_skill(replacement)
+    replacement.rename(skill_path)
+
+    result = Terminal(json_output=True).execute_remove_step(
+        step.label,
+        step.command,
+        step.remove_path,
+        step.removal_guard,
+    )
+
+    assert result.returncode == 1
+    assert original.is_dir()
+    assert skill_path.is_dir()
+
+
+def test_remove_step_refuses_replaced_target_at_execution(tmp_path: Path) -> None:
+    root = tmp_path / "skills"
+    skill_path = root / "helper"
+    write_skill(skill_path)
+    step = remove_steps(
+        (InstalledSkill(name="helper", path=skill_path),),
+        SkillTarget(directory=root, scope="project"),
+    )[0]
+    assert step.removal_guard is not None
+
+    original = tmp_path / "skills-original"
+    root.rename(original)
+    unrelated = tmp_path / "unrelated"
+    write_skill(unrelated / "helper")
+    root.symlink_to(unrelated, target_is_directory=True)
+
+    result = Terminal(json_output=True).execute_remove_step(
+        step.label,
+        step.command,
+        step.remove_path,
+        step.removal_guard,
+    )
+
+    assert result.returncode == 1
+    assert (original / "helper").is_dir()
+    assert (unrelated / "helper").is_dir()

@@ -18,7 +18,7 @@ from .fast_install import (
     prunable_skill_directories,
     supports_fast_install,
 )
-from .io import Command, ProcessResult, ProcessRunner, StepExecutor, StepOutcome
+from .io import Command, ProcessResult, ProcessRunner, RemovalGuard, StepExecutor, StepOutcome
 from .manifest import DesiredSkill, Manifest, SkillSpec, SourceSpec
 from .targets import SkillTarget
 
@@ -58,6 +58,7 @@ class SkillStep:
     label: str
     command: Command
     remove_path: Path | None = None
+    removal_guard: RemovalGuard | None = None
     kind: Literal["command", "remove"] = "command"
     scope: str | None = None
     outcome: OutcomeFactory | None = None

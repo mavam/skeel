@@ -20,14 +20,16 @@ skeel --dir ./custom/skills diff
 
 The new `skeel agents` command lists all supported agents with their project
 and user skill directories, mirroring the GitHub CLI host registry. For a
-named agent, project scope anchors at the enclosing git repository root so
-skills land where the agent discovers them. Named agents reconcile project
-and user scope independently: when the same skill appears in both, skeel
-warns and lets the agent decide runtime precedence instead of skipping a
-copy.
+non-universal agent, project scope anchors at the enclosing git repository root
+so skills land where the agent discovers them. The `universal` target retains
+current-directory anchoring and project-over-user shadowing. Agent-specific
+targets reconcile project and user scope independently: when the same skill
+appears in both, skeel warns and lets the agent decide runtime precedence
+instead of skipping a copy. Claude Code's user directory reflects
+`CLAUDE_CONFIG_DIR` in `skeel agents` output.
 
 JSON output from `list` and `diff` now includes the target `agent` and
-`directory`, and `diff` reports `"scope": "custom"` for `--dir` targets.
+`directory`, and both commands report `"scope": "custom"` for `--dir` targets.
 
 Custom `install:` commands receive `SKEEL_AGENT`, `SKEEL_SCOPE`,
 `SKEEL_SKILLS_DIR`, and `SKEEL_MANIFEST` in their environment. Skeel verifies

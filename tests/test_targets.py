@@ -14,7 +14,8 @@ def test_universal_project_target_uses_cwd(tmp_path: Path) -> None:
     target = resolve_target(scope="project", cwd=tmp_path, home=tmp_path / "home")
     assert target.directory == tmp_path / ".agents" / "skills"
     assert target.scope == "project"
-    assert target.agent is None
+    assert target.agent == "universal"
+    assert target.universal
 
 
 def test_universal_user_target_uses_home(tmp_path: Path) -> None:
@@ -22,6 +23,18 @@ def test_universal_user_target_uses_home(tmp_path: Path) -> None:
     target = resolve_target(scope="user", cwd=tmp_path, home=home)
     assert target.directory == home / ".agents" / "skills"
     assert target.scope == "user"
+
+
+def test_explicit_universal_project_target_keeps_cwd_anchor(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    nested = repo / "nested"
+    nested.mkdir(parents=True)
+    (repo / ".git").mkdir()
+
+    target = resolve_target(scope="project", agent="universal", cwd=nested, home=tmp_path)
+    assert target.directory == nested / ".agents" / "skills"
+    assert target.agent == "universal"
+    assert target.universal
 
 
 def test_agent_project_target_anchors_at_git_root(tmp_path: Path) -> None:

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Literal
 
 Scope = Literal["project", "user", "custom"]
+TargetKind = Literal["universal", "agent", "custom"]
 
 UNIVERSAL_SKILLS_DIR = ".agents/skills"
 CLAUDE_CONFIG_DIR_ENV = "CLAUDE_CONFIG_DIR"
@@ -29,6 +30,11 @@ class SkillTarget:
     directory: Path
     scope: Scope = "custom"
     agent: str | None = None
+    kind: TargetKind = "custom"
+
+    @property
+    def universal(self) -> bool:
+        return self.kind == "universal"
 
 
 @dataclass(frozen=True)
@@ -126,7 +132,7 @@ def project_base(cwd: Path, *, agent: str | None) -> Path:
     agent discovers them, falling back to the working directory outside a
     repository. The universal target keeps its historical cwd anchoring.
     """
-    if agent is None:
+    if agent in (None, "universal"):
         return cwd
     return git_root(cwd) or cwd
 
@@ -147,16 +153,30 @@ def resolve_target(
 ) -> SkillTarget:
     """Resolve an installation target from CLI selectors."""
     if directory is not None:
-        return SkillTarget(directory=Path(directory).expanduser(), scope="custom")
+        return SkillTarget(directory=Path(directory).expanduser(), scope="custom", kind="custom")
 
     cwd = cwd or Path.cwd()
     home = home or Path.home()
-    if agent is None:
+    host = find_agent(agent or "universal")
+    if host.id == "universal":
         base = home if scope == "user" else cwd
-        return SkillTarget(directory=base / UNIVERSAL_SKILLS_DIR, scope=scope)
-
-    host = find_agent(agent)
+        return SkillTarget(
+            directory=base / UNIVERSAL_SKILLS_DIR,
+            scope=scope,
+            agent=host.id,
+            kind="universal",
+        )
     if scope == "user":
-        return SkillTarget(directory=agent_user_directory(host, home), scope="user", agent=host.id)
+        return SkillTarget(
+            directory=agent_user_directory(host, home),
+            scope="user",
+            agent=host.id,
+            kind="agent",
+        )
     base = project_base(cwd, agent=host.id)
-    return SkillTarget(directory=base / host.project_dir, scope="project", agent=host.id)
+    return SkillTarget(
+        directory=base / host.project_dir,
+        scope="project",
+        agent=host.id,
+        kind="agent",
+    )

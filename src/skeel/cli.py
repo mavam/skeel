@@ -62,6 +62,7 @@ from .reconcile import (
     apply_plan,
     build_skill_shadow_index,
     diff_installed_skills,
+    expand_remove_target,
     filter_manifest,
     filter_shadowed_dynamic_sources,
     filter_shadowed_installed,
@@ -75,7 +76,10 @@ from .reconcile import (
 )
 from .targets import (
     AGENT_HOSTS,
+    CLAUDE_CONFIG_DIR_ENV,
+    AgentHost,
     SkillTarget,
+    agent_user_directory,
     project_base,
     resolve_target,
 )
@@ -303,10 +307,10 @@ def build_runtime_for_scope(command: CommonOptions, *, scope: str) -> Runtime:
     )
     if scope == "user":
         manifest_base: Path | None = Path.home()
-    elif command.agent is not None:
+    elif target.kind == "agent":
         # Named agents anchor at the git root so manifest and target stay
         # co-anchored regardless of the working directory.
-        manifest_base = project_base(Path.cwd(), agent=command.agent)
+        manifest_base = project_base(Path.cwd(), agent=target.agent)
     else:
         manifest_base = None
     return Runtime(
@@ -444,7 +448,7 @@ async def list_scope_inventories(selection: ListSelection) -> tuple[ScopeInvento
 def shadow_user_inventories(
     inventories: Sequence[ScopeInventory],
 ) -> ShadowedInventories:
-    if any(inventory.runtime.target.agent is not None for inventory in inventories):
+    if any(inventory.runtime.target.kind == "agent" for inventory in inventories):
         return duplicate_scope_inventories(inventories)
     project = next(
         (inventory for inventory in inventories if inventory.scope == "project"),
@@ -767,7 +771,12 @@ async def command_list(command: CommonOptions) -> int:
             list_installed_skills(
                 inventory.manifest,
                 inventory.installed,
-                scope=inventory.scope,
+                scope=(
+                    inventory.runtime.target.scope
+                    if inventory.runtime.target.scope == "custom"
+                    else inventory.scope
+                ),
+                directory=inventory.runtime.target.directory,
                 agent=inventory.runtime.target.agent,
             )
         )
@@ -795,6 +804,15 @@ async def command_list(command: CommonOptions) -> int:
 
 async def command_apply(command: ApplyOptions) -> int:
     terminal = Terminal(json_output=command.json)
+    selector = apply_selector(command)
+    if command.prune and command.reinstall:
+        terminal.error(
+            "--prune cannot be used with --reinstall; run a full apply --prune separately"
+        )
+        return 2
+    if command.prune and selector is not None:
+        terminal.error("--prune cannot be used with a selective apply; remove the source selector")
+        return 2
     selection = select_manifest_contexts(command)
     if not selection.found_manifest:
         if command.json:
@@ -806,7 +824,6 @@ async def command_apply(command: ApplyOptions) -> int:
 
     results: list[StepResult] = []
     exit_code = 0
-    selector = apply_selector(command)
     if selector is not None and not selection_matches_selector(selection, selector):
         terminal.error(no_manifest_entry_message(selector))
         return 2
@@ -1052,7 +1069,9 @@ async def command_remove_all(command: RemoveOptions) -> int:
         context_key = selection_key(context.runtime)
         updated_manifests[context_key] = update.manifest
         apply_keys.add(context_key)
-        remove_targets.setdefault(context_key, []).append(target)
+        remove_targets.setdefault(context_key, []).extend(
+            expand_remove_target(context.manifest, target)
+        )
         removals.append(
             {
                 "scope": context.scope,
@@ -1139,11 +1158,11 @@ async def command_remove(command: RemoveOptions) -> int:
 
     scope = single_scope(command)
     manifest_exists = runtime.manifest_path.exists()
+    removal_intents: tuple[RemoveTarget, ...] = ()
     if manifest_exists:
+        manifest = load_manifest(runtime.manifest_path)
         try:
-            target = resolve_remove_target(
-                load_manifest(runtime.manifest_path), skill, source=source
-            )
+            target = resolve_remove_target(manifest, skill, source=source)
         except AmbiguousRemoveTarget as error:
             runtime.terminal.error(str(error))
             return 2
@@ -1152,6 +1171,7 @@ async def command_remove(command: RemoveOptions) -> int:
             return 2
         source = target.source
         skill = target.skill
+        removal_intents = expand_remove_target(manifest, target)
     elif source is None:
         runtime.terminal.error(f"no manifest at {runtime.manifest_path}")
         return 2
@@ -1185,7 +1205,7 @@ async def command_remove(command: RemoveOptions) -> int:
             )
         return 0
 
-    removals = (RemoveTarget(source=source, skill=skill),)
+    removals = removal_intents or (RemoveTarget(source=source, skill=skill),)
     if command.json:
         if not manifest_exists:
             runtime.terminal.json(run_json(dry_run=command.dry_run, steps=[]))
@@ -1360,6 +1380,12 @@ async def command_update(command: UpdateOptions) -> int:
     return exit_code
 
 
+def displayed_agent_user_directory(host: AgentHost) -> str:
+    if host.id == "claude-code" and os.environ.get(CLAUDE_CONFIG_DIR_ENV):
+        return str(agent_user_directory(host, Path.home()))
+    return host.user_dir
+
+
 async def command_agents(command: CommonOptions) -> int:
     terminal = Terminal(json_output=command.json)
     if command.json:
@@ -1370,7 +1396,7 @@ async def command_agents(command: CommonOptions) -> int:
                         "agent": host.id,
                         "name": host.name,
                         "project": host.project_dir,
-                        "user": host.user_dir,
+                        "user": displayed_agent_user_directory(host),
                     }
                     for host in AGENT_HOSTS
                 ]
@@ -1381,8 +1407,11 @@ async def command_agents(command: CommonOptions) -> int:
     id_width = max(len(host.id) for host in AGENT_HOSTS)
     project_width = max(len(host.project_dir) for host in AGENT_HOSTS)
     for host in AGENT_HOSTS:
-        terminal.line(
-            f"{host.id:<{id_width}}  {host.project_dir:<{project_width}}  ~/{host.user_dir}"
+        user_dir = displayed_agent_user_directory(host)
+        if not (host.id == "claude-code" and os.environ.get(CLAUDE_CONFIG_DIR_ENV)):
+            user_dir = f"~/{user_dir}"
+        sys.stdout.write(
+            f"{host.id:<{id_width}}  {host.project_dir:<{project_width}}  {user_dir}\n"
         )
     return 0
 

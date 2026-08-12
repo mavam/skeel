@@ -90,13 +90,15 @@ with:
 uvx skeel agents
 ```
 
-For a named agent, project scope anchors at the enclosing git repository root
-so skills land where the agent discovers them, falling back to the working
-directory outside a repository. Manifests stay agent-neutral: the same
-`.agents/skills.yaml` drives every target. Named agents reconcile project and
-user scope independently; when the same skill appears in both, skeel warns and
-lets the agent decide runtime precedence. `--dir` is a complete target on its
-own and cannot be combined with `--agent` or scope selectors.
+For an agent-specific target, project scope anchors at the enclosing git
+repository root so skills land where the agent discovers them, falling back to
+the working directory outside a repository. The `universal` target retains the
+default current-directory anchoring and project-over-user shadowing behavior.
+Manifests stay agent-neutral: the same `.agents/skills.yaml` drives every target.
+Agent-specific targets reconcile project and user scope independently; when the
+same skill appears in both, skeel warns and lets the agent decide runtime
+precedence. `--dir` is a complete target on its own and cannot be combined with
+`--agent` or scope selectors.
 
 Custom `install:` commands receive `SKEEL_AGENT`, `SKEEL_SCOPE`,
 `SKEEL_SKILLS_DIR`, and `SKEEL_MANIFEST` in their environment. Portable
@@ -159,9 +161,11 @@ uvx skeel diff
 
 Reconcile installed skills with the manifest. Missing skills are installed;
 skills not declared in the manifest are preserved by default. Pass `--prune`
-to also remove undeclared extras. Use `--reinstall` to run every manifest
-installer without diffing first, or `apply <source> [skill]` to target one
-source. A selector that does not match the manifest exits with an error.
+to also remove undeclared extras. Pruning applies only to a full reconciliation;
+combine neither `--reinstall` nor a source selector with `--prune`. Use
+`--reinstall` to run every manifest installer without diffing first, or
+`apply <source> [skill]` to target one source. A selector that does not match
+the manifest exits with an error.
 
 ```sh
 uvx skeel apply --dry-run --prune
@@ -183,9 +187,10 @@ uvx skeel apply --prune
 - ★ obsolete-skill
 ```
 
-Before deleting anything, skeel requires the path to be a real skill directory
-containing `SKILL.md` inside the resolved target, refuses symlinks and paths
-outside the target, and never removes the target root. Pruning of skills
+Immediately before deleting anything, skeel verifies that the planned target
+and skill directories have not been replaced, requires a regular `SKILL.md`
+inside the target, refuses symlinks and paths outside the target, and never
+removes the target root. Pruning of skills
 removed upstream from pinned install-all sources is managed-source drift, not
 an extra, and stays always-on during `update`.
 
@@ -294,7 +299,8 @@ uvx skeel remove --source mavam/quarto-brief --dry-run
 
 ### `agents`
 
-List supported agents with their project and user skill directories.
+List supported agents with their project and user skill directories. Claude
+Code's user directory reflects `CLAUDE_CONFIG_DIR` when the variable is set.
 
 ```sh
 uvx skeel agents

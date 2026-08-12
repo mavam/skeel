@@ -14,6 +14,7 @@ from .gh import (
     manual_install_steps,
     source_skill_label,
 )
+from .io import RemovalGuard
 from .manifest import DesiredSkill, Manifest, SkillSpec, SourceSpec, parse_skill
 from .targets import SkillTarget
 
@@ -336,6 +337,7 @@ class SkillDiff:
 class ListedSkill:
     scope: str
     agent: str | None
+    directory: Path
     manifest_path: Path | None
     name: str
     source: str
@@ -350,6 +352,7 @@ class ListedSkill:
         payload: dict[str, object] = {
             "scope": self.scope,
             **({"agent": self.agent} if self.agent is not None else {}),
+            "directory": str(self.directory),
             "name": self.name,
             "source": self.source,
             "label": self.label,
@@ -406,6 +409,7 @@ def list_manifest_skills(
     installed: Sequence[InstalledSkill],
     *,
     scope: str,
+    directory: Path,
     agent: str | None = None,
 ) -> tuple[ListedSkill, ...]:
     rows: list[ListedSkill] = []
@@ -418,6 +422,7 @@ def list_manifest_skills(
                     ListedSkill(
                         scope=scope,
                         agent=agent,
+                        directory=directory,
                         manifest_path=manifest.path,
                         name=match.basename,
                         source=source.source,
@@ -434,6 +439,7 @@ def list_manifest_skills(
                     ListedSkill(
                         scope=scope,
                         agent=agent,
+                        directory=directory,
                         manifest_path=manifest.path,
                         name="*",
                         source=source.source,
@@ -451,6 +457,7 @@ def list_manifest_skills(
                 ListedSkill(
                     scope=scope,
                     agent=agent,
+                    directory=directory,
                     manifest_path=manifest.path,
                     name=desired.name,
                     source=desired.source,
@@ -468,21 +475,32 @@ def list_installed_skills(
     installed: Sequence[InstalledSkill],
     *,
     scope: str,
+    directory: Path,
     agent: str | None = None,
 ) -> tuple[ListedSkill, ...]:
     if manifest is None:
         return unmanaged_installed_skill_rows(
             installed,
             scope=scope,
+            directory=directory,
             agent=agent,
             manifest_path=None,
         )
 
-    rows = list(list_manifest_skills(manifest, installed, scope=scope, agent=agent))
+    rows = list(
+        list_manifest_skills(
+            manifest,
+            installed,
+            scope=scope,
+            directory=directory,
+            agent=agent,
+        )
+    )
     rows.extend(
         unmanaged_installed_skill_rows(
             diff_installed_skills(manifest, installed).extra,
             scope=scope,
+            directory=directory,
             agent=agent,
             manifest_path=None,
         )
@@ -494,6 +512,7 @@ def unmanaged_installed_skill_rows(
     installed: Sequence[InstalledSkill],
     *,
     scope: str,
+    directory: Path,
     agent: str | None = None,
     manifest_path: Path | None,
 ) -> tuple[ListedSkill, ...]:
@@ -501,6 +520,7 @@ def unmanaged_installed_skill_rows(
         ListedSkill(
             scope=scope,
             agent=agent,
+            directory=directory,
             manifest_path=manifest_path,
             name=skill.basename,
             source=skill.github_source or skill.source_url,
@@ -555,6 +575,16 @@ def apply_plan(
     if has_missing_dynamic_source(selected_manifest, diff):
         return [*remove, *install]
     return [*install, *remove]
+
+
+def expand_remove_target(manifest: Manifest, removal: RemoveTarget) -> tuple[RemoveTarget, ...]:
+    """Expand a whole-source removal to names custom installers can be matched by."""
+    if removal.skill is not None:
+        return (removal,)
+    source = next(source for source in manifest.sources if source.source == removal.source)
+    if not source.skills:
+        return (removal,)
+    return tuple(RemoveTarget(source=removal.source, skill=skill.name) for skill in source.skills)
 
 
 def matches_remove_target(skill: InstalledSkill, removal: RemoveTarget) -> bool:
@@ -759,23 +789,42 @@ def installed_skill_matches_dynamic_source(skill: InstalledSkill, source: Source
 
 
 def remove_steps(extra: Sequence[InstalledSkill], target: SkillTarget) -> list[SkillStep]:
+    if not extra:
+        return []
+    if target.directory.is_symlink():
+        raise ValueError(f"refusing to remove through symlinked target: {target.directory}")
     root = target.directory.resolve()
-    steps: list[SkillStep] = []
+    candidates: list[tuple[InstalledSkill, Path, tuple[int, int] | None]] = []
     for skill in extra:
         if skill.path.is_symlink():
             raise ValueError(f"refusing to remove symlinked skill: {skill.path}")
         path = skill.path.resolve()
         if path == root or not path.is_relative_to(root):
             raise ValueError(f"refusing to remove skill outside target directory: {skill.path}")
-        if skill.path.exists() and not (skill.path / "SKILL.md").is_file():
-            raise ValueError(f"refusing to remove directory without SKILL.md: {skill.path}")
-        steps.append(
-            SkillStep(
-                label=skill.label,
-                command=["rm", "-rf", str(skill.path)],
-                remove_path=skill.path,
-                kind="remove",
-                parallel=False,
-            )
+        skill_identity: tuple[int, int] | None = None
+        if skill.path.exists():
+            if not (skill.path / "SKILL.md").is_file():
+                raise ValueError(f"refusing to remove directory without SKILL.md: {skill.path}")
+            skill_stat = skill.path.stat(follow_symlinks=False)
+            skill_identity = (skill_stat.st_dev, skill_stat.st_ino)
+        candidates.append((skill, path, skill_identity))
+
+    root_stat = root.stat()
+    return [
+        SkillStep(
+            label=skill.label,
+            command=["rm", "-rf", str(skill.path)],
+            remove_path=skill.path,
+            removal_guard=RemovalGuard(
+                root=root,
+                relative_path=path.relative_to(root),
+                root_device=root_stat.st_dev,
+                root_inode=root_stat.st_ino,
+                skill_device=skill_identity[0] if skill_identity is not None else None,
+                skill_inode=skill_identity[1] if skill_identity is not None else None,
+            ),
+            kind="remove",
+            parallel=False,
         )
-    return steps
+        for skill, path, skill_identity in candidates
+    ]
