@@ -78,7 +78,8 @@ an explicit directory:
 
 ```sh
 uvx skeel --agent claude-code apply
-uvx skeel --agent claude-code -g list
+uvx skeel --agent codex apply
+uvx skeel --agent pi -g list
 uvx skeel --dir ./custom/skills list
 ```
 
@@ -302,7 +303,9 @@ uvx skeel agents
 ```text
 github-copilot   .agents/skills   ~/.copilot/skills
 claude-code      .claude/skills   ~/.claude/skills
+codex            .agents/skills   ~/.codex/skills
 cursor           .agents/skills   ~/.cursor/skills
+pi               .pi/skills       ~/.pi/agent/skills
 ...
 ```
 
