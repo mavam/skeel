@@ -40,6 +40,23 @@ def test_apply_preserves_extras_by_default(tmp_path: Path) -> None:
     assert [step.kind for step in pruned] == ["command", "remove"]
 
 
+def test_apply_repairs_declared_dangling_symlink_before_install(tmp_path: Path) -> None:
+    target = SkillTarget(directory=tmp_path, scope="project")
+    linked = tmp_path / "alpha"
+    linked.symlink_to(tmp_path / "gone", target_is_directory=True)
+    manifest = manifest_with(
+        SourceSpec(source="example/skills", skills=(SkillSpec(spec="alpha", name="alpha"),))
+    )
+
+    plan = apply_plan(
+        manifest,
+        target,
+        (InstalledSkill(name="alpha", path=linked, usable=False),),
+    )
+
+    assert [step.command[0] for step in plan] == ["unlink", "gh"]
+
+
 def test_apply_removals_delete_exactly_the_selected_skill(tmp_path: Path) -> None:
     target = SkillTarget(directory=tmp_path, scope="project")
     manifest = manifest_with()
@@ -110,17 +127,54 @@ def test_remove_steps_refuses_paths_outside_target(tmp_path: Path) -> None:
         remove_steps((skill,), target)
 
 
-def test_remove_steps_refuses_symlinked_skills(tmp_path: Path) -> None:
+def test_remove_steps_unlinks_symlinked_skills_without_removing_target(tmp_path: Path) -> None:
     root = tmp_path / "skills"
     real = tmp_path / "real-skill"
     write_skill(real)
     root.mkdir()
-    (root / "linked").symlink_to(real)
+    linked = root / "linked"
+    linked.symlink_to(real)
 
     target = SkillTarget(directory=root, scope="project")
-    skill = InstalledSkill(name="linked", path=root / "linked")
-    with pytest.raises(ValueError, match="symlinked"):
-        remove_steps((skill,), target)
+    step = remove_steps((InstalledSkill(name="linked", path=linked),), target)[0]
+    assert step.removal_guard is not None
+
+    result = Terminal(json_output=True).execute_remove_step(
+        step.label,
+        step.command,
+        step.remove_path,
+        step.removal_guard,
+    )
+
+    assert result.returncode == 0
+    assert step.command == ["unlink", str(linked)]
+    assert not linked.exists()
+    assert not linked.is_symlink()
+    assert (real / "SKILL.md").is_file()
+
+
+def test_remove_steps_unlinks_dangling_symlinks(tmp_path: Path) -> None:
+    root = tmp_path / "skills"
+    root.mkdir()
+    linked = root / "missing"
+    linked.symlink_to(tmp_path / "gone", target_is_directory=True)
+
+    step = remove_steps(
+        (InstalledSkill(name="missing", path=linked, usable=False),),
+        SkillTarget(directory=root, scope="project"),
+    )[0]
+    assert step.removal_guard is not None
+
+    result = Terminal(json_output=True).execute_remove_step(
+        step.label,
+        step.command,
+        step.remove_path,
+        step.removal_guard,
+    )
+
+    assert result.returncode == 0
+    assert step.command == ["unlink", str(linked)]
+    assert not linked.is_symlink()
 
 
 def test_remove_steps_accepts_symlinked_target_directory(tmp_path: Path) -> None:
@@ -137,6 +191,34 @@ def test_remove_steps_accepts_symlinked_target_directory(tmp_path: Path) -> None
     assert len(steps) == 1
     assert steps[0].removal_guard is not None
     assert steps[0].removal_guard.root == root.resolve()
+
+
+def test_remove_steps_unlinks_skill_through_symlinked_target(tmp_path: Path) -> None:
+    root = tmp_path / "skills"
+    real = tmp_path / "real-skill"
+    write_skill(real)
+    root.mkdir()
+    (root / "linked").symlink_to(real, target_is_directory=True)
+    linked_root = tmp_path / "linked-skills"
+    linked_root.symlink_to(root, target_is_directory=True)
+    linked = linked_root / "linked"
+
+    step = remove_steps(
+        (InstalledSkill(name="linked", path=linked),),
+        SkillTarget(directory=linked_root, scope="project"),
+    )[0]
+    assert step.removal_guard is not None
+
+    result = Terminal(json_output=True).execute_remove_step(
+        step.label,
+        step.command,
+        step.remove_path,
+        step.removal_guard,
+    )
+
+    assert result.returncode == 0
+    assert not (root / "linked").is_symlink()
+    assert (real / "SKILL.md").is_file()
 
 
 def test_remove_steps_requires_skill_md(tmp_path: Path) -> None:
@@ -207,6 +289,35 @@ def test_remove_step_refuses_replaced_skill_at_execution(tmp_path: Path) -> None
     assert result.returncode == 1
     assert original.is_dir()
     assert skill_path.is_dir()
+
+
+def test_remove_step_refuses_replaced_symlink_at_execution(tmp_path: Path) -> None:
+    root = tmp_path / "skills"
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    write_skill(first)
+    write_skill(second)
+    root.mkdir()
+    linked = root / "helper"
+    linked.symlink_to(first)
+    step = remove_steps(
+        (InstalledSkill(name="helper", path=linked),),
+        SkillTarget(directory=root, scope="project"),
+    )[0]
+    assert step.removal_guard is not None
+    linked.unlink()
+    linked.symlink_to(second)
+
+    result = Terminal(json_output=True).execute_remove_step(
+        step.label,
+        step.command,
+        step.remove_path,
+        step.removal_guard,
+    )
+
+    assert result.returncode == 1
+    assert linked.is_symlink()
+    assert linked.resolve() == second
 
 
 def test_remove_step_refuses_replaced_target_at_execution(tmp_path: Path) -> None:

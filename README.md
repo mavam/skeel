@@ -95,10 +95,11 @@ repository root so skills land where the agent discovers them, falling back to
 the working directory outside a repository. The `universal` target retains the
 default current-directory anchoring and project-over-user shadowing behavior.
 Manifests stay agent-neutral: the same `.agents/skills.yaml` drives every target.
-Agent-specific targets reconcile project and user scope independently; when the
-same skill appears in both, skeel warns and lets the agent decide runtime
-precedence. `--dir` is a complete target on its own and cannot be combined with
-`--agent` or scope selectors.
+Agent-specific targets reconcile project and user scope independently. Valid
+skill directory symlinks count as installed, so links to universal skills remain
+idempotent. When the same skill appears in both scopes, skeel warns and lets the
+agent decide runtime precedence. `--dir` is a complete target on its own and
+cannot be combined with `--agent` or scope selectors.
 
 Custom `install:` commands receive `SKEEL_AGENT`, `SKEEL_SCOPE`,
 `SKEEL_SKILLS_DIR`, and `SKEEL_MANIFEST` in their environment. `SKEEL_AGENT`
@@ -189,11 +190,12 @@ uvx skeel apply --prune
 ```
 
 Immediately before deleting anything, skeel verifies that the planned target
-and skill directories have not been replaced, requires a regular `SKILL.md`
-inside the target, refuses symlinked skills and paths outside the target, and
-never removes the target root. A target directory itself may be reached through
-a symlink; skeel pins its resolved destination while planning. These safeguards
-also cover skills pruned from pinned install-all sources during `update`.
+and skill entries have not been replaced, requires a regular `SKILL.md`, refuses
+paths outside the target, and never removes the target root. Pruning a symlinked
+skill removes only the link, not its destination. A target directory itself may
+be reached through a symlink; skeel pins its resolved destination while planning.
+These safeguards also cover skills pruned from pinned install-all sources during
+`update`.
 
 ### `update`
 

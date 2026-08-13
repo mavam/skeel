@@ -158,6 +158,102 @@ name: caveman
     assert skills[0].version_label == "main@abcdef1"
 
 
+def test_installed_skills_includes_skill_directory_symlinks(tmp_path: Path) -> None:
+    universal = tmp_path / ".agents" / "skills" / "worktrunk"
+    write_skill(
+        universal,
+        """
+---
+metadata:
+  github-ref: refs/tags/v0.73.0
+  github-repo: https://github.com/max-sixty/worktrunk
+  github-tree-sha: abcdef1234567890
+name: worktrunk
+---
+# Worktrunk
+""",
+    )
+    target = tmp_path / ".claude" / "skills"
+    target.mkdir(parents=True)
+    linked = target / "worktrunk"
+    linked.symlink_to(universal, target_is_directory=True)
+    runner = SequenceRunner(
+        ProcessResult(command=[], returncode=0, stdout="gh version 2.94.0", stderr=""),
+        ProcessResult(command=[], returncode=0, stdout="[]", stderr=""),
+    )
+
+    skills = asyncio.run(installed_skills(SkillTarget(directory=target), runner))
+
+    assert len(skills) == 1
+    assert skills[0].name == "worktrunk"
+    assert skills[0].path == linked
+    assert skills[0].github_source == "max-sixty/worktrunk"
+    assert skills[0].version_label == "v0.73.0@abcdef1"
+
+
+def test_installed_skills_deduplicates_links_through_symlinked_target(
+    tmp_path: Path,
+) -> None:
+    universal = tmp_path / ".agents" / "skills" / "worktrunk"
+    write_skill(universal, "---\nname: worktrunk\n---\n# Worktrunk")
+    target = tmp_path / ".claude" / "skills"
+    target.mkdir(parents=True)
+    linked = target / "worktrunk"
+    linked.symlink_to(universal, target_is_directory=True)
+    linked_target = tmp_path / "linked-skills"
+    linked_target.symlink_to(target, target_is_directory=True)
+    runner = SequenceRunner(
+        ProcessResult(command=[], returncode=0, stdout="gh version 2.94.0", stderr=""),
+        ProcessResult(
+            command=[],
+            returncode=0,
+            stdout=(
+                f'[{{"skillName": "worktrunk", "path": "{linked}",'
+                ' "sourceURL": "", "version": "", "pinned": false}]'
+            ),
+            stderr="",
+        ),
+    )
+
+    skills = asyncio.run(installed_skills(SkillTarget(directory=linked_target), runner))
+
+    assert len(skills) == 1
+    assert skills[0].path == linked
+
+
+def test_installed_skills_includes_dangling_links_as_unusable(tmp_path: Path) -> None:
+    target = tmp_path / "skills"
+    target.mkdir()
+    linked = target / "missing"
+    linked.symlink_to(tmp_path / "gone", target_is_directory=True)
+    runner = SequenceRunner(
+        ProcessResult(command=[], returncode=0, stdout="gh version 2.94.0", stderr=""),
+        ProcessResult(command=[], returncode=0, stdout="[]", stderr=""),
+    )
+
+    skills = asyncio.run(installed_skills(SkillTarget(directory=target), runner))
+
+    assert [(skill.name, skill.path, skill.usable) for skill in skills] == [
+        ("missing", linked, False)
+    ]
+
+
+def test_installed_skills_ignores_links_to_non_skill_directories(tmp_path: Path) -> None:
+    target = tmp_path / "skills"
+    target.mkdir()
+    not_a_skill = tmp_path / "not-a-skill"
+    not_a_skill.mkdir()
+    (target / "linked").symlink_to(not_a_skill, target_is_directory=True)
+    runner = SequenceRunner(
+        ProcessResult(command=[], returncode=0, stdout="gh version 2.94.0", stderr=""),
+        ProcessResult(command=[], returncode=0, stdout="[]", stderr=""),
+    )
+
+    skills = asyncio.run(installed_skills(SkillTarget(directory=target), runner))
+
+    assert skills == ()
+
+
 def test_parse_gh_version() -> None:
     assert parse_gh_version("gh version 2.94.0 (2026-06-14)") == (2, 94, 0)
     assert parse_gh_version("unexpected") is None

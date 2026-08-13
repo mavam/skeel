@@ -73,6 +73,7 @@ class RemovalGuard:
     root_inode: int
     skill_device: int | None = None
     skill_inode: int | None = None
+    skill_symlink_target: str | None = None
 
 
 @dataclass(frozen=True)
@@ -572,15 +573,14 @@ class Terminal:
 def build_removal_guard(root: Path, path: Path) -> RemovalGuard:
     """Validate a planned skill removal and capture filesystem identities."""
     canonical_root = root.resolve()
-    if path.is_symlink():
-        raise ValueError(f"refusing to remove symlinked skill: {path}")
-    canonical_path = path.resolve()
+    canonical_path = path.parent.resolve() / path.name
     if canonical_path == canonical_root or not canonical_path.is_relative_to(canonical_root):
         raise ValueError(f"refusing to remove skill outside target directory: {path}")
 
     skill_identity: tuple[int, int] | None = None
-    if path.exists():
-        if not (path / "SKILL.md").is_file():
+    skill_symlink_target = os.readlink(path) if path.is_symlink() else None
+    if path.exists() or skill_symlink_target is not None:
+        if path.exists() and not (path / "SKILL.md").is_file():
             raise ValueError(f"refusing to remove directory without SKILL.md: {path}")
         skill_stat = path.stat(follow_symlinks=False)
         skill_identity = (skill_stat.st_dev, skill_stat.st_ino)
@@ -593,6 +593,7 @@ def build_removal_guard(root: Path, path: Path) -> RemovalGuard:
         root_inode=root_stat.st_ino,
         skill_device=skill_identity[0] if skill_identity is not None else None,
         skill_inode=skill_identity[1] if skill_identity is not None else None,
+        skill_symlink_target=skill_symlink_target,
     )
 
 
@@ -628,9 +629,15 @@ def remove_guarded_directory(path: Path, guard: RemovalGuard) -> None:
             raise ValueError(f"refusing to remove skill that appeared after planning: {path}")
         if (skill_stat.st_dev, skill_stat.st_ino) != (guard.skill_device, guard.skill_inode):
             raise ValueError(f"refusing to remove replaced skill: {path}")
+        if guard.skill_symlink_target is not None:
+            if not stat.S_ISLNK(skill_stat.st_mode) or os.readlink(relative, dir_fd=root_fd) != (
+                guard.skill_symlink_target
+            ):
+                raise ValueError(f"refusing to remove replaced symlinked skill: {path}")
+            os.unlink(relative, dir_fd=root_fd)
+            return
         if not stat.S_ISDIR(skill_stat.st_mode):
-            kind = "symlinked" if stat.S_ISLNK(skill_stat.st_mode) else "non-directory"
-            raise ValueError(f"refusing to remove {kind} skill: {path}")
+            raise ValueError(f"refusing to remove non-directory skill: {path}")
         metadata_stat = os.stat(
             relative / "SKILL.md",
             dir_fd=root_fd,
