@@ -73,7 +73,7 @@ class RemovalGuard:
     root_inode: int
     skill_device: int | None = None
     skill_inode: int | None = None
-    skill_symlink: bool = False
+    skill_symlink_target: str | None = None
 
 
 @dataclass(frozen=True)
@@ -578,9 +578,9 @@ def build_removal_guard(root: Path, path: Path) -> RemovalGuard:
         raise ValueError(f"refusing to remove skill outside target directory: {path}")
 
     skill_identity: tuple[int, int] | None = None
-    skill_symlink = path.is_symlink()
-    if path.exists() or skill_symlink:
-        if not (path / "SKILL.md").is_file():
+    skill_symlink_target = os.readlink(path) if path.is_symlink() else None
+    if path.exists() or skill_symlink_target is not None:
+        if path.exists() and not (path / "SKILL.md").is_file():
             raise ValueError(f"refusing to remove directory without SKILL.md: {path}")
         skill_stat = path.stat(follow_symlinks=False)
         skill_identity = (skill_stat.st_dev, skill_stat.st_ino)
@@ -593,7 +593,7 @@ def build_removal_guard(root: Path, path: Path) -> RemovalGuard:
         root_inode=root_stat.st_ino,
         skill_device=skill_identity[0] if skill_identity is not None else None,
         skill_inode=skill_identity[1] if skill_identity is not None else None,
-        skill_symlink=skill_symlink,
+        skill_symlink_target=skill_symlink_target,
     )
 
 
@@ -629,8 +629,10 @@ def remove_guarded_directory(path: Path, guard: RemovalGuard) -> None:
             raise ValueError(f"refusing to remove skill that appeared after planning: {path}")
         if (skill_stat.st_dev, skill_stat.st_ino) != (guard.skill_device, guard.skill_inode):
             raise ValueError(f"refusing to remove replaced skill: {path}")
-        if guard.skill_symlink:
-            if not stat.S_ISLNK(skill_stat.st_mode):
+        if guard.skill_symlink_target is not None:
+            if not stat.S_ISLNK(skill_stat.st_mode) or os.readlink(relative, dir_fd=root_fd) != (
+                guard.skill_symlink_target
+            ):
                 raise ValueError(f"refusing to remove replaced symlinked skill: {path}")
             os.unlink(relative, dir_fd=root_fd)
             return

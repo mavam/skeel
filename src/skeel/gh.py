@@ -82,6 +82,7 @@ class InstalledSkill:
     version: str = ""
     pinned: bool = False
     provenance: SkillProvenance = field(default_factory=SkillProvenance)
+    usable: bool = True
 
     @property
     def basename(self) -> str:
@@ -388,12 +389,18 @@ async def installed_skills(
                 provenance=read_skill_provenance(skill_path),
             )
         )
-    skills.extend(linked_skills(directory, known_paths={skill.path.absolute() for skill in skills}))
-    return tuple(skills)
+    known_paths = {canonical_skill_entry(skill.path) for skill in skills}
+    skills.extend(linked_skills(directory, known_paths=known_paths))
+    return tuple(sorted(skills, key=lambda skill: (skill.name, str(skill.path))))
+
+
+def canonical_skill_entry(path: Path) -> Path:
+    """Canonicalize a directory entry without following the entry itself."""
+    return path.parent.resolve() / path.name
 
 
 def linked_skills(directory: Path, *, known_paths: set[Path]) -> tuple[InstalledSkill, ...]:
-    """Discover valid skill-directory symlinks omitted by ``gh skill list``."""
+    """Discover skill-directory symlinks omitted by ``gh skill list``."""
     try:
         entries = tuple(directory.iterdir())
     except OSError:
@@ -401,19 +408,23 @@ def linked_skills(directory: Path, *, known_paths: set[Path]) -> tuple[Installed
 
     skills: list[InstalledSkill] = []
     for path in entries:
-        skill_path = path / "SKILL.md"
-        if path.absolute() in known_paths or not path.is_symlink() or not skill_path.is_file():
+        if canonical_skill_entry(path) in known_paths or not path.is_symlink():
             continue
-        frontmatter = read_frontmatter(skill_path)
+        skill_path = path / "SKILL.md"
+        if path.exists() and not skill_path.is_file():
+            continue
+        usable = skill_path.is_file()
+        frontmatter = read_frontmatter(skill_path) if usable else {}
         name = frontmatter.get("name")
         skills.append(
             InstalledSkill(
                 name=name if isinstance(name, str) and name else path.name,
                 path=path,
-                provenance=read_skill_provenance(path),
+                provenance=read_skill_provenance(path) if usable else SkillProvenance(),
+                usable=usable,
             )
         )
-    return tuple(sorted(skills, key=lambda skill: skill.name))
+    return tuple(skills)
 
 
 def desired_labels(manifest: Manifest) -> dict[str, str]:

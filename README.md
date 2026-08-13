@@ -95,8 +95,8 @@ repository root so skills land where the agent discovers them, falling back to
 the working directory outside a repository. The `universal` target retains the
 default current-directory anchoring and project-over-user shadowing behavior.
 Manifests stay agent-neutral: the same `.agents/skills.yaml` drives every target.
-Agent-specific targets reconcile project and user scope independently. Skill
-directory symlinks count as installed, so links to universal skills remain
+Agent-specific targets reconcile project and user scope independently. Valid
+skill directory symlinks count as installed, so links to universal skills remain
 idempotent. When the same skill appears in both scopes, skeel warns and lets the
 agent decide runtime precedence. `--dir` is a complete target on its own and
 cannot be combined with `--agent` or scope selectors.

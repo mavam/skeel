@@ -120,6 +120,8 @@ def build_skill_shadow_index(
                 name=desired.name,
             )
     for installed_skill in installed:
+        if not installed_skill.usable:
+            continue
         index.add(
             installed_skill_shadow_aliases(installed_skill),
             label=installed_skill.label,
@@ -381,10 +383,13 @@ def diff_installed_skills(
     extra = tuple(
         skill
         for skill in installed
-        if skill.name not in desired
-        and skill.basename not in desired
-        and not any(
-            installed_skill_matches_dynamic_source(skill, source) for source in dynamic_sources
+        if not skill.usable
+        or (
+            skill.name not in desired
+            and skill.basename not in desired
+            and not any(
+                installed_skill_matches_dynamic_source(skill, source) for source in dynamic_sources
+            )
         )
     )
     missing: list[DesiredSkill] = []
@@ -525,7 +530,7 @@ def unmanaged_installed_skill_rows(
             name=skill.basename,
             source=skill.github_source or skill.source_url,
             label=skill.label,
-            status="installed",
+            status="installed" if skill.usable else "broken",
             path=skill.path,
             version=skill.version_label,
             managed=False,
@@ -557,12 +562,20 @@ def apply_plan(
             installed=installed,
         )
     )
+    repairs = tuple(
+        skill
+        for skill in diff.extra
+        if not skill.usable and skill_declared_by_manifest(skill, selected_manifest)
+    )
+    repair_paths = {skill.path for skill in repairs}
+    repair_steps = remove_steps(repairs, target)
     if selector is not None:
-        return install
+        return [*repair_steps, *install]
 
     # Extras are preserved by default; ``prune`` removes them all, while
     # explicit ``removals`` (from `skeel remove --apply`) delete exactly the
-    # deselected skills.
+    # deselected skills. Broken links that shadow a declared skill are always
+    # removed first so the following install can repair them.
     if prune:
         removable = diff.extra
     else:
@@ -571,10 +584,21 @@ def apply_plan(
             for skill in diff.extra
             if any(matches_remove_target(skill, removal) for removal in removals)
         )
-    remove = remove_steps(removable, target)
+    cleanup = tuple(skill for skill in removable if skill.path not in repair_paths)
+    cleanup_steps = remove_steps(cleanup, target)
     if has_missing_dynamic_source(selected_manifest, diff):
-        return [*remove, *install]
-    return [*install, *remove]
+        return [*repair_steps, *cleanup_steps, *install]
+    return [*repair_steps, *install, *cleanup_steps]
+
+
+def skill_declared_by_manifest(skill: InstalledSkill, manifest: Manifest) -> bool:
+    aliases = {skill.name, skill.basename, skill.path.name}
+    if any(aliases & desired_aliases(desired) for desired in manifest.desired_skills):
+        return True
+    return any(
+        source.install_all and installed_skill_matches_dynamic_source(skill, source)
+        for source in manifest.sources
+    )
 
 
 def expand_remove_target(manifest: Manifest, removal: RemoveTarget) -> tuple[RemoveTarget, ...]:
@@ -700,6 +724,8 @@ def missing_key(source: SourceSpec, name: str) -> MissingKey:
 def installed_skill_index(installed: Sequence[InstalledSkill]) -> dict[str, InstalledSkill]:
     index: dict[str, InstalledSkill] = {}
     for skill in installed:
+        if not skill.usable:
+            continue
         for alias in {skill.name, skill.basename, skill.path.name}:
             index.setdefault(alias, skill)
     return index
@@ -721,7 +747,7 @@ def update_installed_skills(
     selector: ApplySelector | None,
 ) -> tuple[InstalledSkill, ...]:
     if selector is None:
-        return tuple(installed)
+        return tuple(skill for skill in installed if skill.usable)
 
     selected: list[InstalledSkill] = []
     seen_paths: set[Path] = set()
@@ -730,7 +756,9 @@ def update_installed_skills(
         if source.install_all:
             matches = matching_dynamic_source_skills(source, installed)
             if not matches and selector.skill is None:
-                matches = tuple(skill for skill in installed if not skill.github_source)
+                matches = tuple(
+                    skill for skill in installed if skill.usable and not skill.github_source
+                )
         else:
             matches = tuple(
                 match
@@ -760,7 +788,8 @@ def dynamic_source_installed(source: SourceSpec, installed: Sequence[InstalledSk
 
 def dynamic_source_satisfied(source: SourceSpec, installed: Sequence[InstalledSkill]) -> bool:
     return any(
-        installed_skill_matches_dynamic_source(skill, source)
+        skill.usable
+        and installed_skill_matches_dynamic_source(skill, source)
         and installed_source_matches(skill, source)
         for skill in installed
     )
@@ -772,7 +801,11 @@ def matching_dynamic_source_skills(
 ) -> tuple[InstalledSkill, ...]:
     return tuple(
         sorted(
-            (skill for skill in installed if installed_skill_matches_dynamic_source(skill, source)),
+            (
+                skill
+                for skill in installed
+                if skill.usable and installed_skill_matches_dynamic_source(skill, source)
+            ),
             key=lambda skill: skill.basename,
         )
     )
@@ -795,14 +828,22 @@ def installed_skill_matches_dynamic_source(skill: InstalledSkill, source: Source
 
 
 def remove_steps(extra: Sequence[InstalledSkill], target: SkillTarget) -> list[SkillStep]:
-    return [
-        SkillStep(
-            label=skill.label,
-            command=["rm", "-rf", str(skill.path)],
-            remove_path=skill.path,
-            removal_guard=build_removal_guard(target.directory, skill.path),
-            kind="remove",
-            parallel=False,
+    steps: list[SkillStep] = []
+    for skill in extra:
+        guard = build_removal_guard(target.directory, skill.path)
+        command = (
+            ["unlink", str(skill.path)]
+            if guard.skill_symlink_target is not None
+            else ["rm", "-rf", str(skill.path)]
         )
-        for skill in extra
-    ]
+        steps.append(
+            SkillStep(
+                label=skill.label,
+                command=command,
+                remove_path=skill.path,
+                removal_guard=guard,
+                kind="remove",
+                parallel=False,
+            )
+        )
+    return steps
