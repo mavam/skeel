@@ -1,0 +1,9 @@
+created: 2026-08-13
+title: Idempotent agent skill reconciliation
+intro: >-
+  Skeel now keeps agent-specific reconciliation idempotent when skills link to the
+  universal skill directory. It safely prunes undeclared linked skills without touching
+  their destinations.
+source:
+  mode: sync-stable-queue
+  previous_stable: v2.0.1
