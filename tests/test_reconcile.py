@@ -110,17 +110,29 @@ def test_remove_steps_refuses_paths_outside_target(tmp_path: Path) -> None:
         remove_steps((skill,), target)
 
 
-def test_remove_steps_refuses_symlinked_skills(tmp_path: Path) -> None:
+def test_remove_steps_unlinks_symlinked_skills_without_removing_target(tmp_path: Path) -> None:
     root = tmp_path / "skills"
     real = tmp_path / "real-skill"
     write_skill(real)
     root.mkdir()
-    (root / "linked").symlink_to(real)
+    linked = root / "linked"
+    linked.symlink_to(real)
 
     target = SkillTarget(directory=root, scope="project")
-    skill = InstalledSkill(name="linked", path=root / "linked")
-    with pytest.raises(ValueError, match="symlinked"):
-        remove_steps((skill,), target)
+    step = remove_steps((InstalledSkill(name="linked", path=linked),), target)[0]
+    assert step.removal_guard is not None
+
+    result = Terminal(json_output=True).execute_remove_step(
+        step.label,
+        step.command,
+        step.remove_path,
+        step.removal_guard,
+    )
+
+    assert result.returncode == 0
+    assert not linked.exists()
+    assert not linked.is_symlink()
+    assert (real / "SKILL.md").is_file()
 
 
 def test_remove_steps_accepts_symlinked_target_directory(tmp_path: Path) -> None:
@@ -207,6 +219,35 @@ def test_remove_step_refuses_replaced_skill_at_execution(tmp_path: Path) -> None
     assert result.returncode == 1
     assert original.is_dir()
     assert skill_path.is_dir()
+
+
+def test_remove_step_refuses_replaced_symlink_at_execution(tmp_path: Path) -> None:
+    root = tmp_path / "skills"
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    write_skill(first)
+    write_skill(second)
+    root.mkdir()
+    linked = root / "helper"
+    linked.symlink_to(first)
+    step = remove_steps(
+        (InstalledSkill(name="helper", path=linked),),
+        SkillTarget(directory=root, scope="project"),
+    )[0]
+    assert step.removal_guard is not None
+    linked.unlink()
+    linked.symlink_to(second)
+
+    result = Terminal(json_output=True).execute_remove_step(
+        step.label,
+        step.command,
+        step.remove_path,
+        step.removal_guard,
+    )
+
+    assert result.returncode == 1
+    assert linked.is_symlink()
+    assert linked.resolve() == second
 
 
 def test_remove_step_refuses_replaced_target_at_execution(tmp_path: Path) -> None:

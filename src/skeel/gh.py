@@ -388,7 +388,32 @@ async def installed_skills(
                 provenance=read_skill_provenance(skill_path),
             )
         )
+    skills.extend(linked_skills(directory, known_paths={skill.path.absolute() for skill in skills}))
     return tuple(skills)
+
+
+def linked_skills(directory: Path, *, known_paths: set[Path]) -> tuple[InstalledSkill, ...]:
+    """Discover valid skill-directory symlinks omitted by ``gh skill list``."""
+    try:
+        entries = tuple(directory.iterdir())
+    except OSError:
+        return ()
+
+    skills: list[InstalledSkill] = []
+    for path in entries:
+        skill_path = path / "SKILL.md"
+        if path.absolute() in known_paths or not path.is_symlink() or not skill_path.is_file():
+            continue
+        frontmatter = read_frontmatter(skill_path)
+        name = frontmatter.get("name")
+        skills.append(
+            InstalledSkill(
+                name=name if isinstance(name, str) and name else path.name,
+                path=path,
+                provenance=read_skill_provenance(path),
+            )
+        )
+    return tuple(sorted(skills, key=lambda skill: skill.name))
 
 
 def desired_labels(manifest: Manifest) -> dict[str, str]:
