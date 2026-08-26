@@ -3,6 +3,8 @@ title: Skill frontmatter overrides
 type: feature
 authors:
   - mavam
+prs:
+  - 24
 created: 2026-08-26T05:10:33.92072Z
 ---
 
