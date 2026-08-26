@@ -1,6 +1,8 @@
+import asyncio
 from pathlib import Path
 
 import pytest
+import yaml
 
 from skeel.gh import InstalledSkill
 from skeel.io import Terminal
@@ -38,6 +40,51 @@ def test_apply_preserves_extras_by_default(tmp_path: Path) -> None:
 
     pruned = apply_plan(manifest, target, extras, prune=True)
     assert [step.kind for step in pruned] == ["command", "remove"]
+
+
+def test_apply_reconciles_and_restores_frontmatter_overrides(tmp_path: Path) -> None:
+    target = SkillTarget(directory=tmp_path, scope="project")
+    skill_path = tmp_path / "deploy"
+    skill_path.mkdir()
+    (skill_path / "SKILL.md").write_text(
+        "---\nname: deploy\ndisable-model-invocation: false\n---\n# Deploy\n"
+    )
+    current = (installed("deploy", tmp_path, source="example/skills"),)
+    overridden = manifest_with(
+        SourceSpec(
+            source="example/skills",
+            skills=(
+                SkillSpec(
+                    spec="deploy",
+                    name="deploy",
+                    frontmatter={"disable-model-invocation": True},
+                ),
+            ),
+        )
+    )
+
+    plan = apply_plan(overridden, target, current)
+
+    assert [step.command[0] for step in plan] == ["merge-frontmatter"]
+    assert plan[0].executor is not None
+    assert asyncio.run(plan[0].executor()).returncode == 0
+    frontmatter = yaml.safe_load((skill_path / "SKILL.md").read_text().split("---", 2)[1])
+    assert frontmatter["disable-model-invocation"] is True
+    assert apply_plan(overridden, target, current) == []
+
+    restored = manifest_with(
+        SourceSpec(
+            source="example/skills",
+            skills=(SkillSpec(spec="deploy", name="deploy"),),
+        )
+    )
+    restore_plan = apply_plan(restored, target, current)
+    assert len(restore_plan) == 1
+    assert restore_plan[0].executor is not None
+    assert asyncio.run(restore_plan[0].executor()).returncode == 0
+    frontmatter = yaml.safe_load((skill_path / "SKILL.md").read_text().split("---", 2)[1])
+    assert frontmatter["disable-model-invocation"] is False
+    assert "skeel-overrides" not in frontmatter.get("metadata", {})
 
 
 def test_apply_repairs_declared_dangling_symlink_before_install(tmp_path: Path) -> None:

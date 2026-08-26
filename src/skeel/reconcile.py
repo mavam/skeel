@@ -9,6 +9,7 @@ from .gh import (
     SkillStep,
     desired_aliases,
     desired_label,
+    frontmatter_steps,
     install_steps,
     installed_source_matches,
     manual_install_steps,
@@ -569,8 +570,9 @@ def apply_plan(
     )
     repair_paths = {skill.path for skill in repairs}
     repair_steps = remove_steps(repairs, target)
+    overrides = frontmatter_steps(selected_manifest, installed)
     if selector is not None:
-        return [*repair_steps, *install]
+        return [*repair_steps, *install, *overrides]
 
     # Extras are preserved by default; ``prune`` removes them all, while
     # explicit ``removals`` (from `skeel remove --apply`) delete exactly the
@@ -587,8 +589,8 @@ def apply_plan(
     cleanup = tuple(skill for skill in removable if skill.path not in repair_paths)
     cleanup_steps = remove_steps(cleanup, target)
     if has_missing_dynamic_source(selected_manifest, diff):
-        return [*repair_steps, *cleanup_steps, *install]
-    return [*repair_steps, *install, *cleanup_steps]
+        return [*repair_steps, *cleanup_steps, *install, *overrides]
+    return [*repair_steps, *install, *overrides, *cleanup_steps]
 
 
 def skill_declared_by_manifest(skill: InstalledSkill, manifest: Manifest) -> bool:

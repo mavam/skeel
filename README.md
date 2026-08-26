@@ -39,13 +39,22 @@ sources:
     pin: main
     skills:
       - tenzir-ecs
+      - name: tenzir-commit-changes
+        frontmatter:
+          disable-model-invocation: true
 ```
 
 An empty value installs all skills from a source. A list is the common form for
-selected skills. Use a nested mapping only for source options, such as `pin` or
-custom `install` commands. During `update`, selected skills refresh independently,
-while an install-all source refreshes once and discovers newly added upstream
-skills.
+selected skills. Use a nested mapping for source options, such as `pin` or custom
+`install` commands, or when a skill needs frontmatter overrides. Skeel merges the
+`frontmatter` mapping into the installed `SKILL.md` and reapplies it after updates.
+For example, `disable-model-invocation: true` prevents Claude Code from loading a
+skill automatically while keeping manual invocation available. Other agents may
+ignore agent-specific fields.
+
+During `update`, selected skills refresh independently, while an install-all source
+refreshes once and discovers newly added upstream skills. Frontmatter overrides
+require an explicit skill entry and don't apply to install-all sources.
 
 By default, `skeel` uses project scope: `.agents/skills.yaml` and
 `.agents/skills` in the current working directory. Use `-g` or `--scope user`

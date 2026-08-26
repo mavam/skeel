@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
+import yaml
 
 from skeel.fast_install import RepositoryTree, ResolvedRef
 from skeel.gh import (
@@ -79,6 +80,31 @@ def test_install_steps_cover_selected_and_all_skills() -> None:
     assert "--all" in dynamic_step.command
 
 
+def test_install_steps_merge_frontmatter_after_install(tmp_path: Path) -> None:
+    source = SourceSpec(
+        source="example/skills",
+        skills=(
+            SkillSpec(
+                spec="deploy",
+                name="deploy",
+                frontmatter={"disable-model-invocation": True},
+            ),
+        ),
+    )
+    target = SkillTarget(directory=tmp_path / "skills")
+    skill_path = target.directory / "deploy"
+    write_skill(skill_path, "---\nname: deploy\n---\n# Deploy")
+
+    step = install_steps(source, target)[0]
+
+    assert step.postprocess is not None
+    assert step.preview_detail == "disable-model-invocation"
+    result = step.postprocess(ProcessResult(command=step.command, returncode=0))
+    assert result.returncode == 0
+    frontmatter = (skill_path / "SKILL.md").read_text().split("---", 2)[1]
+    assert yaml.safe_load(frontmatter)["disable-model-invocation"] is True
+
+
 def test_pinned_install_steps_use_archive_installer() -> None:
     source = SourceSpec(
         source="tenzir/skills",
@@ -118,6 +144,31 @@ def test_manual_install_steps() -> None:
         "--force",
     ]
     assert step.executor is not None
+
+
+def test_manual_install_steps_merge_declared_frontmatter(tmp_path: Path) -> None:
+    source = SourceSpec(
+        source="custom/installer",
+        skills=(
+            SkillSpec(
+                spec="deploy",
+                name="deploy",
+                frontmatter={"disable-model-invocation": True},
+            ),
+        ),
+        install=(("install-custom",),),
+    )
+    target = SkillTarget(directory=tmp_path / "skills", scope="project")
+    manifest = Manifest(path=tmp_path / "skills.yaml", sources=(source,))
+    write_skill(target.directory / "deploy", "---\nname: deploy\n---\n# Deploy")
+
+    step = manual_install_steps(source, target, manifest)[0]
+
+    assert step.postprocess is not None
+    result = step.postprocess(ProcessResult(command=step.command, returncode=0))
+    assert result.returncode == 0
+    text = (target.directory / "deploy" / "SKILL.md").read_text()
+    assert yaml.safe_load(text.split("---", 2)[1])["disable-model-invocation"] is True
 
 
 def test_installed_skills_prefers_frontmatter_provenance(tmp_path: Path) -> None:
@@ -269,6 +320,39 @@ def test_installed_skills_rejects_old_gh_version(tmp_path: Path) -> None:
         asyncio.run(installed_skills(SkillTarget(directory=tmp_path / "skills"), runner))
 
     assert runner.calls == [["gh", "--version"]]
+
+
+def test_update_steps_reapply_frontmatter_overrides(tmp_path: Path) -> None:
+    skill_path = tmp_path / "deploy"
+    write_skill(
+        skill_path,
+        "---\nmetadata:\n  github-repo: https://github.com/example/skills\nname: deploy\n---\n",
+    )
+    installed = InstalledSkill(
+        name="deploy",
+        path=skill_path,
+        provenance=read_skill_provenance(skill_path),
+    )
+    manifest = Manifest(
+        path=tmp_path / "skills.yaml",
+        sources=(
+            SourceSpec(
+                source="example/skills",
+                skills=(
+                    SkillSpec(
+                        spec="deploy",
+                        name="deploy",
+                        frontmatter={"disable-model-invocation": True},
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    step = update_steps([installed], SkillTarget(directory=tmp_path), manifest=manifest)[0]
+
+    assert step.postprocess is not None
+    assert step.preview_detail == "disable-model-invocation"
 
 
 def test_update_steps_use_manifest_labels_and_report_version_transition(tmp_path: Path) -> None:

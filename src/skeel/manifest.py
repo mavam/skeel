@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import os
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from .frontmatter import validate_frontmatter_overrides
 
 DEFAULT_MANIFEST = ".agents/skills.yaml"
 
@@ -16,6 +18,7 @@ class SkillSpec:
     spec: str
     name: str
     pin: str | None = None
+    frontmatter: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -105,7 +108,13 @@ def parse_skill(value: Any, *, source_pin: str | None = None) -> SkillSpec:
         raise ValueError(f"skill entry missing name/spec/path: {value!r}")
     name = str(value.get("name") or infer_skill_name(spec))
     pin = value.get("pin", source_pin)
-    return SkillSpec(spec=spec, name=name, pin=str(pin) if pin else None)
+    frontmatter = validate_frontmatter_overrides(value.get("frontmatter"))
+    return SkillSpec(
+        spec=spec,
+        name=name,
+        pin=str(pin) if pin else None,
+        frontmatter=frontmatter,
+    )
 
 
 def parse_source(source: Any, value: Any) -> SourceSpec:

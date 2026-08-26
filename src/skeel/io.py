@@ -19,6 +19,7 @@ from rich.text import Text
 
 Command = list[str]
 StepExecutor = Callable[[], Awaitable["ProcessResult"]]
+StepPostprocessor = Callable[["ProcessResult"], "ProcessResult"]
 TerminalColorSystem = Literal["standard"]
 DEFAULT_PARALLELISM = 32
 
@@ -137,6 +138,12 @@ class SkillStepLike(Protocol):
 
     @property
     def executor(self) -> StepExecutor | None: ...
+
+    @property
+    def postprocess(self) -> StepPostprocessor | None: ...
+
+    @property
+    def preview_detail(self) -> str | None: ...
 
     @property
     def parallel(self) -> bool: ...
@@ -450,10 +457,13 @@ class Terminal:
         *,
         outcome: Callable[[ProcessResult], StepOutcome] | None = None,
         executor: StepExecutor | None = None,
+        postprocess: StepPostprocessor | None = None,
         default_status: str | None = None,
         scope: str | None = None,
     ) -> StepResult:
         result = await executor() if executor else await runner.run(command, capture_output=True)
+        if result.returncode == 0 and postprocess is not None:
+            result = postprocess(result)
         failed = result.returncode != 0
         step_outcome = outcome(result) if not failed and outcome else StepOutcome()
         return StepResult(
@@ -693,9 +703,13 @@ def dry_run_step_result(
             label=step.label,
             command=step.command,
             returncode=None,
+            detail=step.preview_detail,
             scope=step.scope,
         )
-    return runtime.terminal.dry_run_step(step.label, step.command, action=dry_run_action)
+    result = runtime.terminal.dry_run_step(step.label, step.command, action=dry_run_action)
+    if step.preview_detail:
+        runtime.terminal.line(f"  frontmatter: {step.preview_detail}")
+    return result
 
 
 async def execute_skill_step(
@@ -720,6 +734,7 @@ async def execute_skill_step(
         runtime.runner,
         outcome=step.outcome,
         executor=step.executor,
+        postprocess=step.postprocess,
         default_status=default_status,
         scope=step.scope,
     )

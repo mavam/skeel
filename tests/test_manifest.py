@@ -79,6 +79,52 @@ sources:
     )
 
 
+def test_load_manifest_skill_frontmatter_overrides(tmp_path: Path) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  example/skills:
+    skills:
+      - name: deploy
+        frontmatter:
+          disable-model-invocation: true
+""",
+    )
+
+    skill = load_manifest(path).sources[0].skills[0]
+
+    assert skill.frontmatter == {"disable-model-invocation": True}
+
+
+@pytest.mark.parametrize(
+    "frontmatter",
+    [
+        "true",
+        "'{not: a mapping}'",
+        "'{metadata: {github-repo: local}}'",
+        "'{metadata: {skeel-overrides: local}}'",
+    ],
+)
+def test_load_manifest_rejects_invalid_frontmatter(
+    tmp_path: Path,
+    frontmatter: str,
+) -> None:
+    path = write_manifest(
+        tmp_path,
+        f"""
+sources:
+  example/skills:
+    skills:
+      - name: deploy
+        frontmatter: {frontmatter}
+""",
+    )
+
+    with pytest.raises(ValueError, match="frontmatter"):
+        load_manifest(path)
+
+
 def test_old_source_list_is_rejected(tmp_path: Path) -> None:
     path = write_manifest(
         tmp_path,

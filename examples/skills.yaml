@@ -7,6 +7,8 @@ sources:
     - gog
   slack-clacks/clacks:
     skills:
-      - clacks
+      - name: clacks
+        frontmatter:
+          disable-model-invocation: true
     install:
       - uvx --from slack-clacks clacks skill --mode universal --force

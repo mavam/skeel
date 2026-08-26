@@ -13,6 +13,7 @@ from typing import Any
 
 import yaml
 
+from .frontmatter import merge_skill_frontmatter, read_frontmatter_body
 from .io import build_removal_guard, remove_guarded_directory
 from .manifest import SkillSpec, SourceSpec
 
@@ -442,40 +443,16 @@ def inject_github_metadata(
     pinned_ref: str,
     skill_path: str,
 ) -> None:
-    raw_yaml, body = read_frontmatter_body(path.read_text())
-    metadata = raw_yaml.get("metadata")
-    if not isinstance(metadata, dict):
-        metadata = {}
-    metadata.pop("github-owner", None)
-    metadata["github-repo"] = f"https://github.com/{owner}/{repo}"
-    metadata["github-ref"] = ref
-    metadata.pop("github-sha", None)
-    metadata["github-tree-sha"] = tree_sha
-    metadata["github-path"] = skill_path
-    if pinned_ref:
-        metadata["github-pinned"] = pinned_ref
-    else:
-        metadata.pop("github-pinned", None)
-    raw_yaml["metadata"] = metadata
-    path.write_text(serialize_frontmatter(raw_yaml, body))
-
-
-def read_frontmatter_body(text: str) -> tuple[dict[str, Any], str]:
-    lines = text.splitlines(keepends=True)
-    if not lines or lines[0].strip() != "---":
-        return {}, text
-    for index, line in enumerate(lines[1:], start=1):
-        if line.strip() != "---":
-            continue
-        data = yaml.safe_load("".join(lines[1:index])) or {}
-        if not isinstance(data, dict):
-            data = {}
-        return dict(data), "".join(lines[index + 1 :])
-    return {}, text
-
-
-def serialize_frontmatter(data: dict[str, Any], body: str) -> str:
-    return f"---\n{yaml.safe_dump(data, sort_keys=False)}---\n{body}"
+    managed_metadata = {
+        "github-owner": None,
+        "github-repo": f"https://github.com/{owner}/{repo}",
+        "github-ref": ref,
+        "github-sha": None,
+        "github-tree-sha": tree_sha,
+        "github-path": skill_path,
+        "github-pinned": pinned_ref or None,
+    }
+    merge_skill_frontmatter(path, {}, managed_metadata=managed_metadata)
 
 
 def record_lockfile(
