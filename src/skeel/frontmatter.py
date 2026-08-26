@@ -65,7 +65,8 @@ def read_frontmatter_body(text: str) -> tuple[dict[str, Any], str]:
 
 
 def serialize_frontmatter(data: dict[str, Any], body: str) -> str:
-    return f"---\n{yaml.safe_dump(data, sort_keys=False)}---\n{body}"
+    dumped = yaml.safe_dump(data, sort_keys=False, allow_unicode=True, width=4096)
+    return f"---\n{dumped}---\n{body}"
 
 
 def merge_skill_frontmatter(
@@ -73,10 +74,19 @@ def merge_skill_frontmatter(
     overrides: Mapping[str, Any],
     *,
     managed_metadata: Mapping[str, Any] | None = None,
+    root: Path | None = None,
+    trust_existing_state: bool = True,
 ) -> bool:
-    original_text = path.read_text()
+    if root is not None:
+        validate_frontmatter_target(path, root)
+    original_text = path.read_text(encoding="utf-8")
     raw_yaml, body = read_frontmatter_body(original_text)
-    merge_frontmatter_data(raw_yaml, overrides, managed_metadata=managed_metadata)
+    merge_frontmatter_data(
+        raw_yaml,
+        overrides,
+        managed_metadata=managed_metadata,
+        trust_existing_state=trust_existing_state,
+    )
     merged_text = serialize_frontmatter(raw_yaml, body)
     if merged_text == original_text:
         return False
@@ -84,9 +94,16 @@ def merge_skill_frontmatter(
     return True
 
 
-def frontmatter_needs_merge(path: Path, overrides: Mapping[str, Any]) -> bool:
+def frontmatter_needs_merge(
+    path: Path,
+    overrides: Mapping[str, Any],
+    *,
+    root: Path | None = None,
+) -> bool:
     try:
-        original_text = path.read_text()
+        if root is not None:
+            validate_frontmatter_target(path, root)
+        original_text = path.read_text(encoding="utf-8")
         raw_yaml, body = read_frontmatter_body(original_text)
         metadata = raw_yaml.get("metadata")
         if not overrides and (not isinstance(metadata, dict) or OVERRIDE_STATE_KEY not in metadata):
@@ -102,9 +119,14 @@ def merge_frontmatter_data(
     overrides: Mapping[str, Any],
     *,
     managed_metadata: Mapping[str, Any] | None = None,
+    trust_existing_state: bool = True,
 ) -> None:
     desired = validate_frontmatter_overrides(dict(overrides))
-    previous = load_override_state(raw_yaml)
+    if trust_existing_state:
+        previous = load_override_state(raw_yaml)
+    else:
+        discard_override_state(raw_yaml)
+        previous = []
     restore_originals(raw_yaml, previous)
 
     originals: list[dict[str, Any]] = []
@@ -149,6 +171,12 @@ def override_units(overrides: Mapping[str, Any]) -> list[tuple[tuple[str, ...], 
         for metadata_key, metadata_value in value.items():
             units.append((("metadata", metadata_key), metadata_value))
     return units
+
+
+def discard_override_state(raw_yaml: dict[str, Any]) -> None:
+    metadata = raw_yaml.get("metadata")
+    if isinstance(metadata, dict):
+        metadata.pop(OVERRIDE_STATE_KEY, None)
 
 
 def load_override_state(raw_yaml: dict[str, Any]) -> list[dict[str, Any]]:
@@ -246,12 +274,24 @@ def ensure_metadata(raw_yaml: dict[str, Any]) -> dict[str, Any]:
     return metadata
 
 
+def validate_frontmatter_target(path: Path, root: Path) -> None:
+    canonical_root = root.resolve()
+    if path.is_symlink():
+        raise FrontmatterError(f"refusing to replace symlinked SKILL.md: {path}")
+    try:
+        canonical_path = path.resolve(strict=True)
+    except OSError as error:
+        raise FrontmatterError(f"could not resolve frontmatter target {path}: {error}") from error
+    if not canonical_path.is_relative_to(canonical_root):
+        raise FrontmatterError(f"refusing to merge frontmatter outside target directory: {path}")
+
+
 def atomic_write(path: Path, text: str) -> None:
     mode = path.stat().st_mode
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary = Path(temporary_name)
     try:
-        with os.fdopen(descriptor, "w") as output:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
             output.write(text)
         os.chmod(temporary, mode)
         os.replace(temporary, path)

@@ -4,6 +4,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from .frontmatter import frontmatter_needs_merge
 from .gh import (
     InstalledSkill,
     SkillStep,
@@ -330,10 +331,11 @@ def resolve_remove_target(
 class SkillDiff:
     missing: tuple[DesiredSkill, ...]
     extra: tuple[InstalledSkill, ...]
+    changed: tuple[DesiredSkill, ...] = ()
 
     @property
     def in_sync(self) -> bool:
-        return not self.missing and not self.extra
+        return not self.missing and not self.extra and not self.changed
 
 
 @dataclass(frozen=True)
@@ -394,6 +396,7 @@ def diff_installed_skills(
         )
     )
     missing: list[DesiredSkill] = []
+    changed: list[DesiredSkill] = []
     for source in manifest.sources:
         if source.install_all:
             if not dynamic_source_satisfied(source, installed):
@@ -404,9 +407,18 @@ def diff_installed_skills(
             match = matching_installed_skill(desired_skill, installed_index)
             if match is None or not installed_source_matches(match, source):
                 missing.append(desired_skill)
+                continue
+            frontmatter_path = match.path / "SKILL.md"
+            if frontmatter_path.is_file() and frontmatter_needs_merge(
+                frontmatter_path,
+                skill.frontmatter,
+                root=match.path.parent,
+            ):
+                changed.append(desired_skill)
     return SkillDiff(
         missing=tuple(missing),
         extra=tuple(sorted(extra, key=lambda skill: skill.name)),
+        changed=tuple(changed),
     )
 
 
@@ -570,7 +582,7 @@ def apply_plan(
     )
     repair_paths = {skill.path for skill in repairs}
     repair_steps = remove_steps(repairs, target)
-    overrides = frontmatter_steps(selected_manifest, installed)
+    overrides = frontmatter_steps(selected_manifest, target, installed)
     if selector is not None:
         return [*repair_steps, *install, *overrides]
 

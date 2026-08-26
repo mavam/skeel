@@ -86,7 +86,7 @@ def test_install_steps_merge_frontmatter_after_install(tmp_path: Path) -> None:
         skills=(
             SkillSpec(
                 spec="deploy",
-                name="deploy",
+                name="deploy-alias",
                 frontmatter={"disable-model-invocation": True},
             ),
         ),
@@ -97,6 +97,7 @@ def test_install_steps_merge_frontmatter_after_install(tmp_path: Path) -> None:
 
     step = install_steps(source, target)[0]
 
+    assert step.label == "example/skills@deploy-alias"
     assert step.postprocess is not None
     assert step.preview_detail == "disable-model-invocation"
     result = step.postprocess(ProcessResult(command=step.command, returncode=0))
@@ -329,7 +330,7 @@ def test_update_steps_reapply_frontmatter_overrides(tmp_path: Path) -> None:
         "---\nmetadata:\n  github-repo: https://github.com/example/skills\nname: deploy\n---\n",
     )
     installed = InstalledSkill(
-        name="deploy",
+        name="deploy-service",
         path=skill_path,
         provenance=read_skill_provenance(skill_path),
     )
@@ -351,8 +352,13 @@ def test_update_steps_reapply_frontmatter_overrides(tmp_path: Path) -> None:
 
     step = update_steps([installed], SkillTarget(directory=tmp_path), manifest=manifest)[0]
 
+    assert step.label == "example/skills@deploy-service"
     assert step.postprocess is not None
     assert step.preview_detail == "disable-model-invocation"
+    result = step.postprocess(ProcessResult(command=step.command, returncode=0))
+    assert result.returncode == 0
+    frontmatter = yaml.safe_load((skill_path / "SKILL.md").read_text().split("---", 2)[1])
+    assert frontmatter["disable-model-invocation"] is True
 
 
 def test_update_steps_use_manifest_labels_and_report_version_transition(tmp_path: Path) -> None:

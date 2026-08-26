@@ -1566,6 +1566,46 @@ sources:
     ]
 
 
+def test_diff_json_reports_frontmatter_changes(tmp_path, capsys, monkeypatch) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  example/skills:
+    skills:
+      - name: deploy
+        frontmatter:
+          disable-model-invocation: true
+""",
+    )
+    target = tmp_path / ".agents" / "skills"
+    skill_path = target / "deploy"
+    skill_path.mkdir(parents=True)
+    (skill_path / "SKILL.md").write_text("---\nname: deploy\n---\n# Deploy\n")
+    monkeypatch.chdir(tmp_path)
+
+    async def fake_installed_skills(options, runner):
+        return (
+            InstalledSkill(
+                name="deploy",
+                path=skill_path,
+                source_url="https://github.com/example/skills",
+            ),
+        )
+
+    monkeypatch.setattr("skeel.cli.installed_skills", fake_installed_skills)
+
+    assert main(["--json", "--manifest", str(path), "diff"]) == 1
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["missing"] == []
+    assert payload["extra"] == []
+    assert [(entry["name"], entry["source"]) for entry in payload["changed"]] == [
+        ("deploy", "example/skills")
+    ]
+    assert payload["in_sync"] is False
+
+
 def test_diff_json_reports_missing_dynamic_source(tmp_path, capsys, monkeypatch) -> None:
     path = write_manifest(
         tmp_path,
@@ -1594,6 +1634,7 @@ sources:
             }
         ],
         "extra": [],
+        "changed": [],
         "in_sync": False,
     }
 

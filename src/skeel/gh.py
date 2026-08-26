@@ -16,6 +16,7 @@ from .fast_install import (
     fast_install_command,
     is_github_source,
     prunable_skill_directories,
+    skill_command_label,
     supports_fast_install,
 )
 from .frontmatter import FrontmatterError, frontmatter_needs_merge, merge_skill_frontmatter
@@ -69,7 +70,7 @@ class SkillStep:
     command: Command
     remove_path: Path | None = None
     removal_guard: RemovalGuard | None = None
-    kind: Literal["command", "remove"] = "command"
+    kind: Literal["command", "remove", "frontmatter"] = "command"
     scope: str | None = None
     outcome: OutcomeFactory | None = None
     executor: StepExecutor | None = None
@@ -148,7 +149,11 @@ def manual_install_steps(
                     target=target,
                     verify=verify,
                 ),
-                postprocess=source_frontmatter_postprocessor(target, overridden)
+                postprocess=source_frontmatter_postprocessor(
+                    source.source,
+                    target,
+                    overridden,
+                )
                 if overridden
                 else None,
                 preview_detail=source_frontmatter_preview(overridden),
@@ -158,15 +163,13 @@ def manual_install_steps(
 
 
 def source_frontmatter_postprocessor(
+    source: str,
     target: SkillTarget,
     skills: Sequence[SkillSpec],
 ) -> StepPostprocessor:
     def postprocess(result: ProcessResult) -> ProcessResult:
         for skill in skills:
-            result = frontmatter_postprocessor(
-                target.directory / skill.name / "SKILL.md",
-                skill.frontmatter,
-            )(result)
+            result = install_frontmatter_postprocessor(source, target, skill)(result)
             if result.returncode:
                 break
         return result
@@ -191,11 +194,12 @@ def manual_install_executor(
         result = await ProcessRunner().run(command, capture_output=True, env=environment)
         if result.returncode:
             return result
-        missing = [
-            skill.name
-            for skill in verify
-            if not (target.directory / skill.name / "SKILL.md").is_file()
-        ]
+        missing: list[str] = []
+        for skill in verify:
+            try:
+                resolve_installed_frontmatter_path(source.source, target, skill)
+            except FrontmatterError:
+                missing.append(skill.name)
         if missing:
             names = ", ".join(sorted(missing))
             return ProcessResult(
@@ -274,17 +278,18 @@ async def ensure_minimum_gh_version(runner: ProcessRunner) -> None:
 
 def frontmatter_steps(
     manifest: Manifest,
+    target: SkillTarget,
     installed: Sequence[InstalledSkill] = (),
 ) -> list[SkillStep]:
     installed_index: dict[str, InstalledSkill] = {}
     for installed_skill in installed:
         if not installed_skill.usable:
             continue
-        for alias in {
+        for alias in (
             installed_skill.name,
             installed_skill.basename,
             installed_skill.path.name,
-        }:
+        ):
             installed_index.setdefault(alias, installed_skill)
 
     steps: list[SkillStep] = []
@@ -300,34 +305,44 @@ def frontmatter_steps(
                 ),
                 None,
             )
-            if current is None:
+            if current is None or not installed_source_matches(current, source):
                 continue
             frontmatter_path = current.path / "SKILL.md"
             if frontmatter_path in seen or not frontmatter_path.is_file():
                 continue
-            if not frontmatter_needs_merge(frontmatter_path, skill.frontmatter):
+            if not frontmatter_needs_merge(
+                frontmatter_path,
+                skill.frontmatter,
+                root=target.directory,
+            ):
                 continue
             seen.add(frontmatter_path)
-            steps.append(frontmatter_step(source.source, skill, frontmatter_path))
+            steps.append(
+                frontmatter_step(
+                    source.source,
+                    skill,
+                    frontmatter_path,
+                    target.directory,
+                )
+            )
     return steps
 
 
-def frontmatter_step(source: str, skill: SkillSpec, path: Path) -> SkillStep:
-    keys = sorted(skill.frontmatter)
-    command = ["merge-frontmatter", str(path)]
-    for key in keys:
-        command.extend(["--set", key])
-    if not keys:
-        command.append("--restore")
-
+def frontmatter_step(
+    source: str,
+    skill: SkillSpec,
+    path: Path,
+    root: Path,
+) -> SkillStep:
     async def execute() -> ProcessResult:
-        result = ProcessResult(command=command, returncode=0)
-        return frontmatter_postprocessor(path, skill.frontmatter)(result)
+        result = ProcessResult(command=[], returncode=0)
+        return frontmatter_postprocessor(path, root, skill.frontmatter)(result)
 
-    detail = frontmatter_preview_detail(skill.frontmatter) or "restored frontmatter"
+    detail = frontmatter_preview_detail(skill.frontmatter) or "restore frontmatter"
     return SkillStep(
         label=source_skill_label(source, skill.name),
-        command=command,
+        command=[],
+        kind="frontmatter",
         executor=execute,
         outcome=lambda _result: StepOutcome(status="updated", detail=detail),
         preview_detail=detail,
@@ -337,16 +352,73 @@ def frontmatter_step(source: str, skill: SkillSpec, path: Path) -> SkillStep:
 
 def frontmatter_postprocessor(
     path: Path,
+    root: Path,
     overrides: Mapping[str, object],
 ) -> StepPostprocessor:
     def postprocess(result: ProcessResult) -> ProcessResult:
         try:
-            merge_skill_frontmatter(path, overrides)
+            merge_skill_frontmatter(path, overrides, root=root)
         except (OSError, UnicodeError, yaml.YAMLError, FrontmatterError, ValueError) as error:
             return replace(result, returncode=1, stderr=str(error))
         return result
 
     return postprocess
+
+
+def install_frontmatter_postprocessor(
+    source: str,
+    target: SkillTarget,
+    skill: SkillSpec,
+) -> StepPostprocessor:
+    def postprocess(result: ProcessResult) -> ProcessResult:
+        try:
+            path = resolve_installed_frontmatter_path(source, target, skill)
+        except FrontmatterError as error:
+            return replace(result, returncode=1, stderr=str(error))
+        return frontmatter_postprocessor(path, target.directory, skill.frontmatter)(result)
+
+    return postprocess
+
+
+def resolve_installed_frontmatter_path(
+    source: str,
+    target: SkillTarget,
+    skill: SkillSpec,
+) -> Path:
+    requested = skill_command_label(skill).removesuffix("/SKILL.md").rstrip("/")
+    inferred_name = Path(requested).name
+    candidate_names = tuple(dict.fromkeys(name for name in (inferred_name, skill.name) if name))
+    for name in candidate_names:
+        path = target.directory / name / "SKILL.md"
+        if path.is_file():
+            return path
+
+    aliases = {skill.name, inferred_name}
+    matches: list[Path] = []
+    try:
+        candidates = tuple(target.directory.iterdir())
+    except OSError as error:
+        raise FrontmatterError(
+            f"could not inspect installed skills in {target.directory}: {error}"
+        ) from error
+    for candidate in candidates:
+        path = candidate / "SKILL.md"
+        if not path.is_file():
+            continue
+        frontmatter = read_frontmatter(path)
+        installed_name = frontmatter.get("name")
+        provenance = read_skill_provenance(candidate)
+        if (
+            candidate.name in aliases
+            or (isinstance(installed_name, str) and installed_name in aliases)
+            or (provenance.source == source and Path(provenance.path).name in aliases)
+        ):
+            matches.append(path)
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise FrontmatterError(f'frontmatter target for skill "{skill.name}" is ambiguous')
+    raise FrontmatterError(f'installed skill "{skill.name}" has no SKILL.md in {target.directory}')
 
 
 def frontmatter_preview_detail(overrides: Mapping[str, object]) -> str | None:
@@ -394,10 +466,7 @@ def install_steps(
         postprocess = None
         preview_detail = None
         if skill is not None and skill.frontmatter:
-            postprocess = frontmatter_postprocessor(
-                target.directory / skill.name / "SKILL.md",
-                skill.frontmatter,
-            )
+            postprocess = install_frontmatter_postprocessor(source.source, target, skill)
             preview_detail = frontmatter_preview_detail(skill.frontmatter)
         steps.append(
             SkillStep(
@@ -644,82 +713,69 @@ def update_steps(
         if skill.path in excluded_paths:
             continue
         label = labels.get(skill.name, labels.get(skill.basename, skill.label))
+        matched_spec: SkillSpec | None = None
         if match := matching_desired_install(skill, specs):
             source, skill_spec = match
+            matched_spec = skill_spec
             if supports_fast_install(source, skill_spec):
                 session = sessions.setdefault(source.source, FastInstallSession(source.source))
                 command = fast_install_command(source, skill_spec)
-                steps.append(
-                    SkillStep(
-                        label=label,
+                step = SkillStep(
+                    label=label,
+                    command=command,
+                    outcome=fast_update_outcome(skill),
+                    executor=fast_install_executor(
+                        session,
+                        source=source,
+                        skill=skill_spec,
+                        target=target,
                         command=command,
-                        outcome=fast_update_outcome(skill),
-                        executor=fast_install_executor(
-                            session,
-                            source=source,
-                            skill=skill_spec,
-                            target=target,
-                            command=command,
-                        ),
-                    )
+                    ),
                 )
+                steps.append(with_update_frontmatter(step, skill, skill_spec, target))
                 continue
             if needs_source_reinstall(skill, source):
                 repair = install_step_for_skill(source, skill_spec, target)
-                steps.append(replace(repair, label=label, outcome=update_outcome(skill)))
+                repair = replace(repair, label=label, outcome=update_outcome(skill))
+                steps.append(with_update_frontmatter(repair, skill, skill_spec, target))
                 continue
 
-        steps.append(
-            SkillStep(
-                label=label,
-                command=[
-                    "gh",
-                    "skill",
-                    "update",
-                    skill.update_name,
-                    "--dir",
-                    str(target.directory),
-                    "--all",
-                ],
-                outcome=update_outcome(skill),
-            )
+        step = SkillStep(
+            label=label,
+            command=[
+                "gh",
+                "skill",
+                "update",
+                skill.update_name,
+                "--dir",
+                str(target.directory),
+                "--all",
+            ],
+            outcome=update_outcome(skill),
         )
-    return update_frontmatter_postprocessors(steps, installed, manifest)
+        if matched_spec is not None:
+            step = with_update_frontmatter(step, skill, matched_spec, target)
+        steps.append(step)
+    return steps
 
 
-def update_frontmatter_postprocessors(
-    steps: Sequence[SkillStep],
-    installed: Sequence[InstalledSkill],
-    manifest: Manifest,
-) -> list[SkillStep]:
-    specs = desired_install_specs(manifest)
-    overrides: dict[str, tuple[Path, Mapping[str, object]]] = {}
-    for current in installed:
-        match = matching_desired_install(current, specs)
-        if match is None:
-            continue
-        source, skill = match
-        if skill.frontmatter:
-            overrides[source_skill_label(source.source, skill.name)] = (
-                current.path / "SKILL.md",
-                skill.frontmatter,
-            )
-
-    result: list[SkillStep] = []
-    for step in steps:
-        override = overrides.get(step.label)
-        if override is None:
-            result.append(step)
-            continue
-        path, frontmatter = override
-        result.append(
-            replace(
-                step,
-                postprocess=frontmatter_postprocessor(path, frontmatter),
-                preview_detail=frontmatter_preview_detail(frontmatter),
-            )
-        )
-    return result
+def with_update_frontmatter(
+    step: SkillStep,
+    installed: InstalledSkill,
+    desired: SkillSpec,
+    target: SkillTarget,
+) -> SkillStep:
+    if not desired.frontmatter:
+        return step
+    return replace(
+        step,
+        postprocess=frontmatter_postprocessor(
+            installed.path / "SKILL.md",
+            target.directory,
+            desired.frontmatter,
+        ),
+        preview_detail=frontmatter_preview_detail(desired.frontmatter),
+    )
 
 
 def pinned_prune_preview_steps(

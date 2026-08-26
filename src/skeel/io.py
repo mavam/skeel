@@ -401,11 +401,12 @@ class Terminal:
         self,
         missing: Sequence[tuple[str, str | None, str | None]],
         extra: Sequence[tuple[str, str | None, str | None]],
+        changed: Sequence[tuple[str, str | None, str | None]],
         *,
         manifest_path: Path,
         warning: bool = False,
     ) -> None:
-        if not missing and not extra:
+        if not missing and not extra and not changed:
             return
 
         if warning:
@@ -415,6 +416,13 @@ class Terminal:
             self.status_line(MARKER_INSTALL, f"{source or 'manual'}@{name}", scope=scope)
         for name, source, scope in extra:
             self.status_line(MARKER_REMOVE, f"{source or 'installed'}@{name}", scope=scope)
+        for name, source, scope in changed:
+            self.status_line(
+                MARKER_UPDATED,
+                f"{source or 'manual'}@{name}",
+                detail="frontmatter",
+                scope=scope,
+            )
 
     def dry_run_step(self, label: str, command: Command, *, action: str) -> StepResult:
         del action
@@ -687,6 +695,21 @@ def dry_run_step_result(
     *,
     dry_run_action: str,
 ) -> StepResult:
+    if step.kind == "frontmatter":
+        if not runtime.terminal.json_output:
+            runtime.terminal.status_line(
+                MARKER_PREVIEW,
+                step.label,
+                detail=step.preview_detail,
+                scope=step.scope,
+            )
+        return StepResult(
+            label=step.label,
+            command=[],
+            returncode=None,
+            detail=step.preview_detail,
+            scope=step.scope,
+        )
     if step.remove_path is not None:
         if runtime.terminal.json_output:
             return StepResult(

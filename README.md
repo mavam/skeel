@@ -48,6 +48,11 @@ An empty value installs all skills from a source. A list is the common form for
 selected skills. Use a nested mapping for source options, such as `pin` or custom
 `install` commands, or when a skill needs frontmatter overrides. Skeel merges the
 `frontmatter` mapping into the installed `SKILL.md` and reapplies it after updates.
+It records the original values under `metadata.skeel-overrides` so removing an
+override restores the upstream value. Manual edits to an overridden key are replaced
+on the next `apply`, and writing an override normalizes the frontmatter YAML. The
+`diff` command reports overrides that still need to be applied.
+
 For example, `disable-model-invocation: true` prevents Claude Code from loading a
 skill automatically while keeping manual invocation available. Other agents may
 ignore agent-specific fields.

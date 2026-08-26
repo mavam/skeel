@@ -18,7 +18,7 @@ class SkillSpec:
     spec: str
     name: str
     pin: str | None = None
-    frontmatter: dict[str, Any] = field(default_factory=dict)
+    frontmatter: dict[str, Any] = field(default_factory=dict, hash=False)
 
 
 @dataclass(frozen=True)

@@ -69,6 +69,20 @@ def test_merge_skill_frontmatter_preserves_managed_github_metadata(tmp_path: Pat
     assert frontmatter["metadata"]["github-repo"] == "https://github.com/owner/repo"  # type: ignore[index]
 
 
+def test_merge_skill_frontmatter_preserves_readable_unicode(tmp_path: Path) -> None:
+    path = tmp_path / "SKILL.md"
+    path.write_text(
+        "---\nname: deploy\ndescription: Use when the user says “ship it” — 🚀\n---\n# Deploy\n",
+        encoding="utf-8",
+    )
+
+    merge_skill_frontmatter(path, {"disable-model-invocation": True})
+
+    text = path.read_text(encoding="utf-8")
+    assert "Use when the user says “ship it” — 🚀" in text
+    assert "\\u201" not in text
+
+
 def test_frontmatter_without_overrides_does_not_need_reformatting(tmp_path: Path) -> None:
     path = tmp_path / "SKILL.md"
     path.write_text("---\nname: deploy\nmetadata: {catalog: upstream}\n---\n# Deploy\n")

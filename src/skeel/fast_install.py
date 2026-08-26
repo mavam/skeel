@@ -452,7 +452,12 @@ def inject_github_metadata(
         "github-path": skill_path,
         "github-pinned": pinned_ref or None,
     }
-    merge_skill_frontmatter(path, {}, managed_metadata=managed_metadata)
+    merge_skill_frontmatter(
+        path,
+        {},
+        managed_metadata=managed_metadata,
+        trust_existing_state=False,
+    )
 
 
 def record_lockfile(

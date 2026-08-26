@@ -92,9 +92,12 @@ sources:
 """,
     )
 
-    skill = load_manifest(path).sources[0].skills[0]
+    source = load_manifest(path).sources[0]
+    skill = source.skills[0]
 
     assert skill.frontmatter == {"disable-model-invocation": True}
+    assert isinstance(hash(skill), int)
+    assert isinstance(hash(source), int)
 
 
 @pytest.mark.parametrize(

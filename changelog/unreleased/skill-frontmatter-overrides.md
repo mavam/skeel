@@ -19,4 +19,4 @@ sources:
           disable-model-invocation: true
 ```
 
-This lets you keep upstream skills user-invocable without allowing Claude Code to load them automatically.
+This lets you keep upstream skills user-invocable without allowing Claude Code to load them automatically. The `diff` command also reports frontmatter overrides that haven't been applied yet.
