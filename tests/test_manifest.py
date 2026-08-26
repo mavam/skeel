@@ -79,7 +79,49 @@ sources:
     )
 
 
-def test_load_manifest_skill_frontmatter_overrides(tmp_path: Path) -> None:
+@pytest.mark.parametrize("disabled", [True, False])
+def test_load_manifest_model_invocation_setting(tmp_path: Path, disabled: bool) -> None:
+    value = str(disabled).lower()
+    path = write_manifest(
+        tmp_path,
+        f"""
+sources:
+  example/skills:
+    skills:
+      - name: deploy
+        disable-model-invocation: {value}
+""",
+    )
+
+    source = load_manifest(path).sources[0]
+    skill = source.skills[0]
+
+    assert skill.disable_model_invocation is disabled
+    assert isinstance(hash(skill), int)
+    assert isinstance(hash(source), int)
+
+
+@pytest.mark.parametrize("value", ["manual", "1", "null"])
+def test_load_manifest_rejects_non_boolean_model_invocation_setting(
+    tmp_path: Path,
+    value: str,
+) -> None:
+    path = write_manifest(
+        tmp_path,
+        f"""
+sources:
+  example/skills:
+    skills:
+      - name: deploy
+        disable-model-invocation: {value}
+""",
+    )
+
+    with pytest.raises(ValueError, match="must be a boolean"):
+        load_manifest(path)
+
+
+def test_load_manifest_rejects_generic_frontmatter_overrides(tmp_path: Path) -> None:
     path = write_manifest(
         tmp_path,
         """
@@ -92,39 +134,7 @@ sources:
 """,
     )
 
-    source = load_manifest(path).sources[0]
-    skill = source.skills[0]
-
-    assert skill.frontmatter == {"disable-model-invocation": True}
-    assert isinstance(hash(skill), int)
-    assert isinstance(hash(source), int)
-
-
-@pytest.mark.parametrize(
-    "frontmatter",
-    [
-        "true",
-        "'{not: a mapping}'",
-        "'{metadata: {github-repo: local}}'",
-        "'{metadata: {skeel-overrides: local}}'",
-    ],
-)
-def test_load_manifest_rejects_invalid_frontmatter(
-    tmp_path: Path,
-    frontmatter: str,
-) -> None:
-    path = write_manifest(
-        tmp_path,
-        f"""
-sources:
-  example/skills:
-    skills:
-      - name: deploy
-        frontmatter: {frontmatter}
-""",
-    )
-
-    with pytest.raises(ValueError, match="frontmatter"):
+    with pytest.raises(ValueError, match="frontmatter overrides are not supported"):
         load_manifest(path)
 
 

@@ -9,45 +9,9 @@ from typing import Any
 
 import yaml
 
-OVERRIDE_STATE_KEY = "skeel-overrides"
-OVERRIDE_STATE_VERSION = 1
-_PROTECTED_GITHUB_METADATA = {
-    "github-owner",
-    "github-repo",
-    "github-ref",
-    "github-sha",
-    "github-tree-sha",
-    "github-path",
-    "github-pinned",
-}
-
 
 class FrontmatterError(ValueError):
     pass
-
-
-def validate_frontmatter_overrides(value: object) -> dict[str, Any]:
-    if value is None:
-        return {}
-    if not isinstance(value, dict):
-        raise ValueError("skill frontmatter must be a mapping")
-    validate_mapping_keys(value, path="frontmatter")
-    metadata = value.get("metadata")
-    if metadata is not None:
-        if not isinstance(metadata, dict):
-            raise ValueError("skill frontmatter metadata must be a mapping")
-        for key in metadata:
-            if key == OVERRIDE_STATE_KEY or key in _PROTECTED_GITHUB_METADATA:
-                raise ValueError(f"skill frontmatter cannot override metadata.{key}")
-    return copy.deepcopy(value)
-
-
-def validate_mapping_keys(value: Mapping[object, object], *, path: str) -> None:
-    for key, nested in value.items():
-        if not isinstance(key, str):
-            raise ValueError(f"{path} keys must be strings")
-        if isinstance(nested, dict):
-            validate_mapping_keys(nested, path=f"{path}.{key}")
 
 
 def read_frontmatter_body(text: str) -> tuple[dict[str, Any], str]:
@@ -69,24 +33,29 @@ def serialize_frontmatter(data: dict[str, Any], body: str) -> str:
     return f"---\n{dumped}---\n{body}"
 
 
-def merge_skill_frontmatter(
+def update_skill_frontmatter(
     path: Path,
-    overrides: Mapping[str, Any],
     *,
+    disable_model_invocation: bool | None = None,
     managed_metadata: Mapping[str, Any] | None = None,
     root: Path | None = None,
-    trust_existing_state: bool = True,
 ) -> bool:
     if root is not None:
         validate_frontmatter_target(path, root)
     original_text = path.read_text(encoding="utf-8")
     raw_yaml, body = read_frontmatter_body(original_text)
-    merge_frontmatter_data(
-        raw_yaml,
-        overrides,
-        managed_metadata=managed_metadata,
-        trust_existing_state=trust_existing_state,
-    )
+    if disable_model_invocation is not None:
+        raw_yaml["disable-model-invocation"] = disable_model_invocation
+    if managed_metadata:
+        metadata = raw_yaml.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+            raw_yaml["metadata"] = metadata
+        for key, value in managed_metadata.items():
+            if value is None:
+                metadata.pop(key, None)
+            else:
+                metadata[key] = copy.deepcopy(value)
     merged_text = serialize_frontmatter(raw_yaml, body)
     if merged_text == original_text:
         return False
@@ -94,184 +63,19 @@ def merge_skill_frontmatter(
     return True
 
 
-def frontmatter_needs_merge(
+def model_invocation_needs_update(
     path: Path,
-    overrides: Mapping[str, Any],
+    disabled: bool,
     *,
     root: Path | None = None,
 ) -> bool:
     try:
         if root is not None:
             validate_frontmatter_target(path, root)
-        original_text = path.read_text(encoding="utf-8")
-        raw_yaml, body = read_frontmatter_body(original_text)
-        metadata = raw_yaml.get("metadata")
-        if not overrides and (not isinstance(metadata, dict) or OVERRIDE_STATE_KEY not in metadata):
-            return False
-        merge_frontmatter_data(raw_yaml, overrides)
+        raw_yaml, _ = read_frontmatter_body(path.read_text(encoding="utf-8"))
     except OSError, UnicodeError, yaml.YAMLError, FrontmatterError:
         return True
-    return serialize_frontmatter(raw_yaml, body) != original_text
-
-
-def merge_frontmatter_data(
-    raw_yaml: dict[str, Any],
-    overrides: Mapping[str, Any],
-    *,
-    managed_metadata: Mapping[str, Any] | None = None,
-    trust_existing_state: bool = True,
-) -> None:
-    desired = validate_frontmatter_overrides(dict(overrides))
-    if trust_existing_state:
-        previous = load_override_state(raw_yaml)
-    else:
-        discard_override_state(raw_yaml)
-        previous = []
-    restore_originals(raw_yaml, previous)
-
-    originals: list[dict[str, Any]] = []
-    for path, value in override_units(desired):
-        present, original = read_path(raw_yaml, path)
-        record: dict[str, Any] = {"path": list(path), "present": present}
-        if present:
-            record["value"] = copy.deepcopy(original)
-        originals.append(record)
-        merged = deep_merge(original, value) if present else copy.deepcopy(value)
-        write_path(raw_yaml, path, merged)
-
-    if managed_metadata:
-        metadata = ensure_metadata(raw_yaml)
-        for key, value in managed_metadata.items():
-            if value is None:
-                metadata.pop(key, None)
-            else:
-                metadata[key] = copy.deepcopy(value)
-
-    current_metadata = raw_yaml.get("metadata")
-    if originals:
-        current_metadata = ensure_metadata(raw_yaml)
-        current_metadata[OVERRIDE_STATE_KEY] = {
-            "version": OVERRIDE_STATE_VERSION,
-            "originals": originals,
-        }
-    elif isinstance(current_metadata, dict):
-        current_metadata.pop(OVERRIDE_STATE_KEY, None)
-        if not current_metadata:
-            raw_yaml.pop("metadata", None)
-
-
-def override_units(overrides: Mapping[str, Any]) -> list[tuple[tuple[str, ...], Any]]:
-    units: list[tuple[tuple[str, ...], Any]] = []
-    for key, value in overrides.items():
-        if key != "metadata":
-            units.append(((key,), value))
-            continue
-        if not isinstance(value, Mapping):
-            raise FrontmatterError("skill frontmatter metadata must be a mapping")
-        for metadata_key, metadata_value in value.items():
-            units.append((("metadata", metadata_key), metadata_value))
-    return units
-
-
-def discard_override_state(raw_yaml: dict[str, Any]) -> None:
-    metadata = raw_yaml.get("metadata")
-    if isinstance(metadata, dict):
-        metadata.pop(OVERRIDE_STATE_KEY, None)
-
-
-def load_override_state(raw_yaml: dict[str, Any]) -> list[dict[str, Any]]:
-    metadata = raw_yaml.get("metadata")
-    if not isinstance(metadata, dict) or OVERRIDE_STATE_KEY not in metadata:
-        return []
-    state = metadata.pop(OVERRIDE_STATE_KEY)
-    if not isinstance(state, dict) or state.get("version") != OVERRIDE_STATE_VERSION:
-        raise FrontmatterError("invalid skeel frontmatter override state")
-    originals = state.get("originals")
-    if not isinstance(originals, list):
-        raise FrontmatterError("invalid skeel frontmatter override originals")
-
-    parsed: list[dict[str, Any]] = []
-    for record in originals:
-        if not isinstance(record, dict):
-            raise FrontmatterError("invalid skeel frontmatter override record")
-        path = record.get("path")
-        present = record.get("present")
-        if (
-            not isinstance(path, list)
-            or not path
-            or not all(isinstance(part, str) for part in path)
-            or not isinstance(present, bool)
-            or (present and "value" not in record)
-        ):
-            raise FrontmatterError("invalid skeel frontmatter override record")
-        parsed.append(record)
-    return parsed
-
-
-def restore_originals(raw_yaml: dict[str, Any], originals: list[dict[str, Any]]) -> None:
-    for record in originals:
-        path = tuple(record["path"])
-        if record["present"]:
-            write_path(raw_yaml, path, copy.deepcopy(record["value"]))
-        else:
-            delete_path(raw_yaml, path)
-
-
-def read_path(data: dict[str, Any], path: tuple[str, ...]) -> tuple[bool, Any]:
-    current: Any = data
-    for key in path:
-        if not isinstance(current, dict) or key not in current:
-            return False, None
-        current = current[key]
-    return True, current
-
-
-def write_path(data: dict[str, Any], path: tuple[str, ...], value: Any) -> None:
-    current = data
-    for key in path[:-1]:
-        nested = current.get(key)
-        if not isinstance(nested, dict):
-            nested = {}
-            current[key] = nested
-        current = nested
-    current[path[-1]] = value
-
-
-def delete_path(data: dict[str, Any], path: tuple[str, ...]) -> None:
-    current: Any = data
-    parents: list[tuple[dict[str, Any], str]] = []
-    for key in path[:-1]:
-        if not isinstance(current, dict) or key not in current:
-            return
-        parents.append((current, key))
-        current = current[key]
-    if not isinstance(current, dict):
-        return
-    current.pop(path[-1], None)
-    for parent, key in reversed(parents):
-        nested = parent.get(key)
-        if isinstance(nested, dict) and not nested:
-            parent.pop(key)
-
-
-def deep_merge(original: Any, override: Any) -> Any:
-    if not isinstance(original, Mapping) or not isinstance(override, Mapping):
-        return copy.deepcopy(override)
-    merged = copy.deepcopy(dict(original))
-    for key, value in override.items():
-        if key in merged:
-            merged[key] = deep_merge(merged[key], value)
-        else:
-            merged[key] = copy.deepcopy(value)
-    return merged
-
-
-def ensure_metadata(raw_yaml: dict[str, Any]) -> dict[str, Any]:
-    metadata = raw_yaml.get("metadata")
-    if not isinstance(metadata, dict):
-        metadata = {}
-        raw_yaml["metadata"] = metadata
-    return metadata
+    return raw_yaml.get("disable-model-invocation") is not disabled
 
 
 def validate_frontmatter_target(path: Path, root: Path) -> None:
@@ -283,7 +87,7 @@ def validate_frontmatter_target(path: Path, root: Path) -> None:
     except OSError as error:
         raise FrontmatterError(f"could not resolve frontmatter target {path}: {error}") from error
     if not canonical_path.is_relative_to(canonical_root):
-        raise FrontmatterError(f"refusing to merge frontmatter outside target directory: {path}")
+        raise FrontmatterError(f"refusing to update frontmatter outside target directory: {path}")
 
 
 def atomic_write(path: Path, text: str) -> None:

@@ -4,7 +4,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from .frontmatter import frontmatter_needs_merge
+from .frontmatter import model_invocation_needs_update
 from .gh import (
     InstalledSkill,
     SkillStep,
@@ -409,10 +409,14 @@ def diff_installed_skills(
                 missing.append(desired_skill)
                 continue
             frontmatter_path = match.path / "SKILL.md"
-            if frontmatter_path.is_file() and frontmatter_needs_merge(
-                frontmatter_path,
-                skill.frontmatter,
-                root=match.path.parent,
+            if (
+                skill.disable_model_invocation is not None
+                and frontmatter_path.is_file()
+                and model_invocation_needs_update(
+                    frontmatter_path,
+                    skill.disable_model_invocation,
+                    root=match.path.parent,
+                )
             ):
                 changed.append(desired_skill)
     return SkillDiff(

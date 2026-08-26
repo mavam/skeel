@@ -8,7 +8,6 @@ sources:
   slack-clacks/clacks:
     skills:
       - name: clacks
-        frontmatter:
-          disable-model-invocation: true
+        disable-model-invocation: true
     install:
       - uvx --from slack-clacks clacks skill --mode universal --force

@@ -77,41 +77,6 @@ description: ASIM reference
     )
 
 
-def test_install_skill_discards_foreign_override_state(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    home = tmp_path / "home"
-    source = tmp_path / "source" / "deploy"
-    source.mkdir(parents=True)
-    (source / "SKILL.md").write_text(
-        """---
-name: deploy
-metadata:
-  skeel-overrides:
-    version: 999
-    originals: []
----
-# Deploy
-"""
-    )
-    monkeypatch.setattr("skeel.fast_install.Path.home", lambda: home)
-
-    install_skill(
-        source="example/skills",
-        pin="main",
-        ref="refs/heads/main",
-        tree_sha="tree123",
-        skill=DiscoveredSkill(name="deploy", path="skills/deploy", directory=source),
-        directory=tmp_path / "target",
-    )
-
-    skill_md = tmp_path / "target" / "deploy" / "SKILL.md"
-    frontmatter = yaml.safe_load(skill_md.read_text().split("---", 2)[1])
-    assert "skeel-overrides" not in frontmatter["metadata"]
-    assert frontmatter["metadata"]["github-repo"] == "https://github.com/example/skills"
-
-
 def test_install_skill_replaces_symlink_without_removing_its_destination(
     tmp_path: Path,
     monkeypatch,

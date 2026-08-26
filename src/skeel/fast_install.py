@@ -13,7 +13,7 @@ from typing import Any
 
 import yaml
 
-from .frontmatter import merge_skill_frontmatter, read_frontmatter_body
+from .frontmatter import read_frontmatter_body, update_skill_frontmatter
 from .io import build_removal_guard, remove_guarded_directory
 from .manifest import SkillSpec, SourceSpec
 
@@ -452,12 +452,7 @@ def inject_github_metadata(
         "github-path": skill_path,
         "github-pinned": pinned_ref or None,
     }
-    merge_skill_frontmatter(
-        path,
-        {},
-        managed_metadata=managed_metadata,
-        trust_existing_state=False,
-    )
+    update_skill_frontmatter(path, managed_metadata=managed_metadata)
 
 
 def record_lockfile(

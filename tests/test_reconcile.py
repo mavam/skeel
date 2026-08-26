@@ -48,7 +48,7 @@ def test_apply_preserves_extras_by_default(tmp_path: Path) -> None:
     assert [step.kind for step in pruned] == ["command", "remove"]
 
 
-def test_apply_reconciles_and_restores_frontmatter_overrides(tmp_path: Path) -> None:
+def test_apply_reconciles_model_invocation_setting(tmp_path: Path) -> None:
     target = SkillTarget(directory=tmp_path, scope="project")
     skill_path = tmp_path / "deploy"
     skill_path.mkdir()
@@ -63,7 +63,7 @@ def test_apply_reconciles_and_restores_frontmatter_overrides(tmp_path: Path) -> 
                 SkillSpec(
                     spec="deploy",
                     name="deploy",
-                    frontmatter={"disable-model-invocation": True},
+                    disable_model_invocation=True,
                 ),
             ),
         )
@@ -79,19 +79,13 @@ def test_apply_reconciles_and_restores_frontmatter_overrides(tmp_path: Path) -> 
     assert frontmatter["disable-model-invocation"] is True
     assert apply_plan(overridden, target, current) == []
 
-    restored = manifest_with(
+    unmanaged = manifest_with(
         SourceSpec(
             source="example/skills",
             skills=(SkillSpec(spec="deploy", name="deploy"),),
         )
     )
-    restore_plan = apply_plan(restored, target, current)
-    assert len(restore_plan) == 1
-    assert restore_plan[0].executor is not None
-    assert asyncio.run(restore_plan[0].executor()).returncode == 0
-    frontmatter = yaml.safe_load((skill_path / "SKILL.md").read_text().split("---", 2)[1])
-    assert frontmatter["disable-model-invocation"] is False
-    assert "skeel-overrides" not in frontmatter.get("metadata", {})
+    assert apply_plan(unmanaged, target, current) == []
 
 
 def test_frontmatter_diff_reports_pending_override(tmp_path: Path) -> None:
@@ -107,7 +101,7 @@ def test_frontmatter_diff_reports_pending_override(tmp_path: Path) -> None:
                 SkillSpec(
                     spec="deploy",
                     name="deploy",
-                    frontmatter={"disable-model-invocation": True},
+                    disable_model_invocation=True,
                 ),
             ),
         )
@@ -147,7 +141,7 @@ def test_apply_refuses_frontmatter_override_through_external_symlink(tmp_path: P
                 SkillSpec(
                     spec="deploy",
                     name="deploy",
-                    frontmatter={"disable-model-invocation": True},
+                    disable_model_invocation=True,
                 ),
             ),
         )

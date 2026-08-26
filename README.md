@@ -40,25 +40,23 @@ sources:
     skills:
       - tenzir-ecs
       - name: tenzir-commit-changes
-        frontmatter:
-          disable-model-invocation: true
+        disable-model-invocation: true
 ```
 
 An empty value installs all skills from a source. A list is the common form for
 selected skills. Use a nested mapping for source options, such as `pin` or custom
-`install` commands, or when a skill needs frontmatter overrides. Skeel merges the
-`frontmatter` mapping into the installed `SKILL.md` and reapplies it after updates.
-It records the original values under `metadata.skeel-overrides` so removing an
-override restores the upstream value. Manual edits to an overridden key are replaced
-on the next `apply`, and writing an override normalizes the frontmatter YAML. The
-`diff` command reports overrides that still need to be applied.
+`install` commands, or to set `disable-model-invocation` for one skill. Skeel writes
+the canonical field to the installed `SKILL.md` and reapplies it after updates. The
+`diff` command reports configured values that still need to be applied.
 
-For example, `disable-model-invocation: true` prevents Claude Code from loading a
-skill automatically while keeping manual invocation available. Other agents may
-ignore agent-specific fields.
+Setting `disable-model-invocation: true` prevents Claude Code from loading a skill
+automatically while keeping manual invocation available. Set it to `false` to allow
+automatic invocation explicitly. Removing the option stops skeel from managing the
+field; use `apply --reinstall` if you want to restore the upstream file immediately.
+Other agents may ignore this field.
 
 During `update`, selected skills refresh independently, while an install-all source
-refreshes once and discovers newly added upstream skills. Frontmatter overrides
+refreshes once and discovers newly added upstream skills. Model-invocation settings
 require an explicit skill entry and don't apply to install-all sources.
 
 By default, `skeel` uses project scope: `.agents/skills.yaml` and
