@@ -19,6 +19,7 @@ from rich.text import Text
 
 Command = list[str]
 StepExecutor = Callable[[], Awaitable["ProcessResult"]]
+StepPostprocessor = Callable[["ProcessResult"], "ProcessResult"]
 TerminalColorSystem = Literal["standard"]
 DEFAULT_PARALLELISM = 32
 
@@ -137,6 +138,12 @@ class SkillStepLike(Protocol):
 
     @property
     def executor(self) -> StepExecutor | None: ...
+
+    @property
+    def postprocess(self) -> StepPostprocessor | None: ...
+
+    @property
+    def preview_detail(self) -> str | None: ...
 
     @property
     def parallel(self) -> bool: ...
@@ -394,11 +401,12 @@ class Terminal:
         self,
         missing: Sequence[tuple[str, str | None, str | None]],
         extra: Sequence[tuple[str, str | None, str | None]],
+        changed: Sequence[tuple[str, str | None, str | None]],
         *,
         manifest_path: Path,
         warning: bool = False,
     ) -> None:
-        if not missing and not extra:
+        if not missing and not extra and not changed:
             return
 
         if warning:
@@ -408,6 +416,13 @@ class Terminal:
             self.status_line(MARKER_INSTALL, f"{source or 'manual'}@{name}", scope=scope)
         for name, source, scope in extra:
             self.status_line(MARKER_REMOVE, f"{source or 'installed'}@{name}", scope=scope)
+        for name, source, scope in changed:
+            self.status_line(
+                MARKER_UPDATED,
+                f"{source or 'manual'}@{name}",
+                detail="frontmatter",
+                scope=scope,
+            )
 
     def dry_run_step(self, label: str, command: Command, *, action: str) -> StepResult:
         del action
@@ -450,10 +465,13 @@ class Terminal:
         *,
         outcome: Callable[[ProcessResult], StepOutcome] | None = None,
         executor: StepExecutor | None = None,
+        postprocess: StepPostprocessor | None = None,
         default_status: str | None = None,
         scope: str | None = None,
     ) -> StepResult:
         result = await executor() if executor else await runner.run(command, capture_output=True)
+        if result.returncode == 0 and postprocess is not None:
+            result = postprocess(result)
         failed = result.returncode != 0
         step_outcome = outcome(result) if not failed and outcome else StepOutcome()
         return StepResult(
@@ -677,6 +695,22 @@ def dry_run_step_result(
     *,
     dry_run_action: str,
 ) -> StepResult:
+    if step.kind == "frontmatter":
+        if not runtime.terminal.json_output:
+            runtime.terminal.status_line(
+                MARKER_PREVIEW,
+                step.label,
+                detail=step.preview_detail,
+                scope=step.scope,
+            )
+        return StepResult(
+            label=step.label,
+            command=[],
+            returncode=None,
+            status="updated",
+            detail=step.preview_detail,
+            scope=step.scope,
+        )
     if step.remove_path is not None:
         if runtime.terminal.json_output:
             return StepResult(
@@ -693,9 +727,13 @@ def dry_run_step_result(
             label=step.label,
             command=step.command,
             returncode=None,
+            detail=step.preview_detail,
             scope=step.scope,
         )
-    return runtime.terminal.dry_run_step(step.label, step.command, action=dry_run_action)
+    result = runtime.terminal.dry_run_step(step.label, step.command, action=dry_run_action)
+    if step.preview_detail:
+        runtime.terminal.line(f"  frontmatter: {step.preview_detail}")
+    return result
 
 
 async def execute_skill_step(
@@ -720,6 +758,7 @@ async def execute_skill_step(
         runtime.runner,
         outcome=step.outcome,
         executor=step.executor,
+        postprocess=step.postprocess,
         default_status=default_status,
         scope=step.scope,
     )

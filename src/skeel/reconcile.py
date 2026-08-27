@@ -4,11 +4,13 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from .frontmatter import frontmatter_needs_update
 from .gh import (
     InstalledSkill,
     SkillStep,
     desired_aliases,
     desired_label,
+    frontmatter_steps,
     install_steps,
     installed_source_matches,
     manual_install_steps,
@@ -329,10 +331,11 @@ def resolve_remove_target(
 class SkillDiff:
     missing: tuple[DesiredSkill, ...]
     extra: tuple[InstalledSkill, ...]
+    changed: tuple[DesiredSkill, ...] = ()
 
     @property
     def in_sync(self) -> bool:
-        return not self.missing and not self.extra
+        return not self.missing and not self.extra and not self.changed
 
 
 @dataclass(frozen=True)
@@ -393,6 +396,7 @@ def diff_installed_skills(
         )
     )
     missing: list[DesiredSkill] = []
+    changed: list[DesiredSkill] = []
     for source in manifest.sources:
         if source.install_all:
             if not dynamic_source_satisfied(source, installed):
@@ -403,9 +407,22 @@ def diff_installed_skills(
             match = matching_installed_skill(desired_skill, installed_index)
             if match is None or not installed_source_matches(match, source):
                 missing.append(desired_skill)
+                continue
+            frontmatter_path = match.path / "SKILL.md"
+            if (
+                bool(skill.frontmatter)
+                and frontmatter_path.is_file()
+                and frontmatter_needs_update(
+                    frontmatter_path,
+                    skill.frontmatter,
+                    root=match.path.parent,
+                )
+            ):
+                changed.append(desired_skill)
     return SkillDiff(
         missing=tuple(missing),
         extra=tuple(sorted(extra, key=lambda skill: skill.name)),
+        changed=tuple(changed),
     )
 
 
@@ -569,8 +586,9 @@ def apply_plan(
     )
     repair_paths = {skill.path for skill in repairs}
     repair_steps = remove_steps(repairs, target)
+    overrides = frontmatter_steps(selected_manifest, target, installed)
     if selector is not None:
-        return [*repair_steps, *install]
+        return [*repair_steps, *install, *overrides]
 
     # Extras are preserved by default; ``prune`` removes them all, while
     # explicit ``removals`` (from `skeel remove --apply`) delete exactly the
@@ -587,8 +605,8 @@ def apply_plan(
     cleanup = tuple(skill for skill in removable if skill.path not in repair_paths)
     cleanup_steps = remove_steps(cleanup, target)
     if has_missing_dynamic_source(selected_manifest, diff):
-        return [*repair_steps, *cleanup_steps, *install]
-    return [*repair_steps, *install, *cleanup_steps]
+        return [*repair_steps, *cleanup_steps, *install, *overrides]
+    return [*repair_steps, *install, *overrides, *cleanup_steps]
 
 
 def skill_declared_by_manifest(skill: InstalledSkill, manifest: Manifest) -> bool:

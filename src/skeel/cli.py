@@ -566,6 +566,7 @@ async def diff_skills(
 def diff_json(
     missing: Sequence[tuple[DesiredSkill, ScopeInventory]],
     extra: Sequence[tuple[InstalledSkill, ScopeInventory]],
+    changed: Sequence[tuple[DesiredSkill, ScopeInventory]] = (),
     warnings: Sequence[SkillShadowWarning] = (),
 ) -> dict[str, object]:
     payload: dict[str, object] = {
@@ -586,7 +587,15 @@ def diff_json(
             }
             for skill, inventory in extra
         ],
-        "in_sync": not missing and not extra,
+        "changed": [
+            {
+                "name": skill.name,
+                "source": skill.source,
+                **target_payload(inventory),
+            }
+            for skill, inventory in changed
+        ],
+        "in_sync": not missing and not extra and not changed,
     }
     add_warning_payload(payload, warnings)
     return payload
@@ -703,6 +712,8 @@ def remove_all_json(
 
 
 def install_failure_message(step: StepResult) -> str:
+    if not step.command and step.detail:
+        return f"failed to update skill frontmatter: {step.label}"
     return f"failed to install skill: {step.label}"
 
 
@@ -735,7 +746,7 @@ async def command_diff(command: CommonOptions) -> int:
     selection = select_manifest_contexts(command)
     if not selection.found_manifest:
         if command.json:
-            terminal.json(diff_json([], []))
+            terminal.json(diff_json([], [], []))
         else:
             for path in selection.missing_paths:
                 terminal.no_manifest(path)
@@ -744,23 +755,26 @@ async def command_diff(command: CommonOptions) -> int:
     shadowed = shadow_user_inventories(await manifest_scope_inventories(command, selection))
     missing: list[tuple[DesiredSkill, ScopeInventory]] = []
     extra: list[tuple[InstalledSkill, ScopeInventory]] = []
+    changed: list[tuple[DesiredSkill, ScopeInventory]] = []
     for inventory in shadowed.inventories:
         if inventory.manifest is None:
             continue
         current = diff_installed_skills(inventory.manifest, inventory.installed)
         missing.extend((skill, inventory) for skill in current.missing)
         extra.extend((skill, inventory) for skill in current.extra)
+        changed.extend((skill, inventory) for skill in current.changed)
 
     if command.json:
-        terminal.json(diff_json(missing, extra, warnings=shadowed.warnings))
+        terminal.json(diff_json(missing, extra, changed, warnings=shadowed.warnings))
     else:
         render_shadow_warnings(terminal, shadowed.warnings)
         terminal.diff(
             [(skill.name, skill.source, inventory.scope) for skill, inventory in missing],
             [(skill.name, skill.source_url or None, inventory.scope) for skill, inventory in extra],
+            [(skill.name, skill.source, inventory.scope) for skill, inventory in changed],
             manifest_path=selection.contexts[0].manifest.path,
         )
-    return 0 if not missing and not extra else 1
+    return 0 if not missing and not extra and not changed else 1
 
 
 async def command_list(command: CommonOptions) -> int:

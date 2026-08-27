@@ -35,17 +35,33 @@ sources:
   mavam/quarto-brief:
   openclaw/gogcli:
     - gog
-  tenzir/skills:
+  acme/skills:
     pin: main
     skills:
-      - tenzir-ecs
+      - code-review
+      - name: deploy
+        frontmatter:
+          disable-model-invocation: true
+          compatibility: Requires Git
 ```
 
 An empty value installs all skills from a source. A list is the common form for
-selected skills. Use a nested mapping only for source options, such as `pin` or
-custom `install` commands. During `update`, selected skills refresh independently,
-while an install-all source refreshes once and discovers newly added upstream
-skills.
+selected skills. Use a nested mapping for source options such as `pin` and custom
+`install` commands. Put `frontmatter` overrides on an individual skill entry. Skeel
+applies configured top-level fields to the installed `SKILL.md`, reapplies them after
+updates, and reports drift through `diff`.
+
+Frontmatter overrides are shallow: scalar and list values replace upstream values,
+while `metadata` entries merge with the upstream map. The skill `name` and skeel's
+`github-*` provenance metadata cannot be overridden. Removing a field stops skeel from
+managing it; use `apply --reinstall` to restore upstream content immediately. Applying
+overrides normalizes the YAML frontmatter and may discard comments or scalar formatting.
+Overrides cannot target symlinked files or skill directories that resolve outside the
+managed skills directory.
+
+During `update`, selected skills refresh independently, while an install-all source
+refreshes once and discovers newly added upstream skills. Frontmatter overrides require
+an explicit skill entry and don't apply to install-all sources.
 
 By default, `skeel` uses project scope: `.agents/skills.yaml` and
 `.agents/skills` in the current working directory. Use `-g` or `--scope user`
@@ -146,7 +162,8 @@ uvx skeel list -a
 ### `diff`
 
 Compare desired state with installed skills. `+` rows would be installed by
-`apply`; `-` rows would be removed by `apply --prune`.
+`apply`; `-` rows would be removed by `apply --prune`; `↑` rows have pending
+frontmatter overrides.
 
 ```sh
 uvx skeel diff
@@ -155,9 +172,14 @@ uvx skeel diff
 ```text
 + ★ wrangler cloudflare/skills
 + ★ vectorize cloudflare/skills
+↑ ★ deploy acme/skills frontmatter
 - ★ obsolete-skill installed
 - ★ old-experiment installed
 ```
+
+JSON output includes missing skills in `missing`, undeclared skills in `extra`, and
+frontmatter drift in `changed`. Any non-empty array sets `in_sync` to `false` and makes
+`diff` exit with status 1.
 
 ### `apply`
 

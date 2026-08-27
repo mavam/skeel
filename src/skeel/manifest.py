@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import copy
 import os
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,7 @@ class SkillSpec:
     spec: str
     name: str
     pin: str | None = None
+    frontmatter: dict[str, Any] = field(default_factory=dict, hash=False)
 
 
 @dataclass(frozen=True)
@@ -105,7 +107,25 @@ def parse_skill(value: Any, *, source_pin: str | None = None) -> SkillSpec:
         raise ValueError(f"skill entry missing name/spec/path: {value!r}")
     name = str(value.get("name") or infer_skill_name(spec))
     pin = value.get("pin", source_pin)
-    return SkillSpec(spec=spec, name=name, pin=str(pin) if pin else None)
+    raw_frontmatter = value.get("frontmatter", {})
+    if not isinstance(raw_frontmatter, dict) or not all(
+        isinstance(key, str) for key in raw_frontmatter
+    ):
+        raise ValueError("skill frontmatter must be a mapping with string keys")
+    if "name" in raw_frontmatter:
+        raise ValueError("skill frontmatter cannot override name")
+    metadata = raw_frontmatter.get("metadata")
+    if "metadata" in raw_frontmatter:
+        if not isinstance(metadata, dict) or not all(isinstance(key, str) for key in metadata):
+            raise ValueError("skill frontmatter metadata must be a mapping with string keys")
+        if any(key.startswith("github-") for key in metadata):
+            raise ValueError("skill frontmatter cannot override skeel provenance metadata")
+    return SkillSpec(
+        spec=spec,
+        name=name,
+        pin=str(pin) if pin else None,
+        frontmatter=copy.deepcopy(raw_frontmatter),
+    )
 
 
 def parse_source(source: Any, value: Any) -> SourceSpec:
@@ -126,6 +146,8 @@ def parse_source(source: Any, value: Any) -> SourceSpec:
         raise ValueError("source entries use mapping keys, not source/github fields")
     if "backend" in value:
         raise ValueError("manifest backends are not supported; skeel always uses gh skill")
+    if "frontmatter" in value:
+        raise ValueError("frontmatter belongs on an individual skill, not a source")
 
     install = tuple(parse_command(command) for command in value.get("install") or [])
     source_pin = value.get("pin")
@@ -352,10 +374,21 @@ def remove_source_skill(sources: dict[Any, Any], source: str, skill: str) -> boo
 def upsert_skill(skills: list[Any], skill: str) -> bool:
     desired = parse_skill(skill)
     for index, current in enumerate(skills):
-        if parse_skill(current).name == desired.name:
-            if current == skill:
+        parsed = parse_skill(current)
+        if parsed.name == desired.name:
+            if parsed.spec == desired.spec:
                 return False
-            skills[index] = skill
+            if isinstance(current, dict):
+                updated = dict(current)
+                if "spec" in updated:
+                    updated["spec"] = skill
+                elif "path" in updated:
+                    updated["path"] = skill
+                else:
+                    updated["spec"] = skill
+                skills[index] = updated
+            else:
+                skills[index] = skill
             return True
     skills.append(skill)
     return True

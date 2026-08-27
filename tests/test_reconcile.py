@@ -1,11 +1,19 @@
+import asyncio
 from pathlib import Path
 
 import pytest
+import yaml
 
 from skeel.gh import InstalledSkill
 from skeel.io import Terminal
 from skeel.manifest import Manifest, SkillSpec, SourceSpec
-from skeel.reconcile import RemoveTarget, apply_plan, expand_remove_target, remove_steps
+from skeel.reconcile import (
+    RemoveTarget,
+    apply_plan,
+    diff_installed_skills,
+    expand_remove_target,
+    remove_steps,
+)
 from skeel.targets import SkillTarget
 
 
@@ -38,6 +46,116 @@ def test_apply_preserves_extras_by_default(tmp_path: Path) -> None:
 
     pruned = apply_plan(manifest, target, extras, prune=True)
     assert [step.kind for step in pruned] == ["command", "remove"]
+
+
+def test_apply_reconciles_frontmatter(tmp_path: Path) -> None:
+    target = SkillTarget(directory=tmp_path, scope="project")
+    skill_path = tmp_path / "deploy"
+    skill_path.mkdir()
+    (skill_path / "SKILL.md").write_text(
+        "---\nname: deploy\ndisable-model-invocation: false\n---\n# Deploy\n"
+    )
+    current = (installed("deploy", tmp_path, source="example/skills"),)
+    overridden = manifest_with(
+        SourceSpec(
+            source="example/skills",
+            skills=(
+                SkillSpec(
+                    spec="deploy",
+                    name="deploy",
+                    frontmatter={"disable-model-invocation": True},
+                ),
+            ),
+        )
+    )
+
+    plan = apply_plan(overridden, target, current)
+
+    assert [step.kind for step in plan] == ["frontmatter"]
+    assert plan[0].command == []
+    assert plan[0].executor is not None
+    assert asyncio.run(plan[0].executor()).returncode == 0
+    frontmatter = yaml.safe_load((skill_path / "SKILL.md").read_text().split("---", 2)[1])
+    assert frontmatter["disable-model-invocation"] is True
+    assert apply_plan(overridden, target, current) == []
+
+    unmanaged = manifest_with(
+        SourceSpec(
+            source="example/skills",
+            skills=(SkillSpec(spec="deploy", name="deploy"),),
+        )
+    )
+    assert apply_plan(unmanaged, target, current) == []
+
+
+def test_frontmatter_diff_reports_pending_override(tmp_path: Path) -> None:
+    target = SkillTarget(directory=tmp_path, scope="project")
+    skill_path = tmp_path / "deploy"
+    skill_path.mkdir()
+    (skill_path / "SKILL.md").write_text("---\nname: deploy\n---\n# Deploy\n")
+    current = (installed("deploy", tmp_path, source="example/skills"),)
+    manifest = manifest_with(
+        SourceSpec(
+            source="example/skills",
+            skills=(
+                SkillSpec(
+                    spec="deploy",
+                    name="deploy",
+                    frontmatter={"disable-model-invocation": True},
+                ),
+            ),
+        )
+    )
+
+    diff = diff_installed_skills(manifest, current)
+
+    assert [skill.name for skill in diff.changed] == ["deploy"]
+    assert not diff.in_sync
+    assert len(apply_plan(manifest, target, current)) == 1
+
+
+def test_apply_refuses_frontmatter_override_through_external_symlink(tmp_path: Path) -> None:
+    target = SkillTarget(directory=tmp_path / "skills", scope="project")
+    target.directory.mkdir()
+    external = tmp_path / "external" / "deploy"
+    external.mkdir(parents=True)
+    skill_md = external / "SKILL.md"
+    original = (
+        "---\nname: deploy\nmetadata:\n"
+        "  github-repo: https://github.com/example/skills\n---\n# Deploy\n"
+    )
+    skill_md.write_text(original)
+    linked = target.directory / "deploy"
+    linked.symlink_to(external, target_is_directory=True)
+    current = (
+        InstalledSkill(
+            name="deploy",
+            path=linked,
+            source_url="https://github.com/example/skills",
+        ),
+    )
+    manifest = manifest_with(
+        SourceSpec(
+            source="example/skills",
+            skills=(
+                SkillSpec(
+                    spec="deploy",
+                    name="deploy",
+                    frontmatter={"disable-model-invocation": True},
+                ),
+            ),
+        )
+    )
+
+    plan = apply_plan(manifest, target, current)
+
+    assert len(plan) == 1
+    assert plan[0].executor is not None
+    result = asyncio.run(plan[0].executor())
+    assert result.returncode == 1
+    assert "outside target directory" in result.stderr
+    assert skill_md.read_text() == original
+    assert [skill.name for skill in diff_installed_skills(manifest, current).changed] == ["deploy"]
 
 
 def test_apply_repairs_declared_dangling_symlink_before_install(tmp_path: Path) -> None:
