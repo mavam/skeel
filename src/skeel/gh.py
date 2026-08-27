@@ -21,6 +21,7 @@ from .fast_install import (
 )
 from .frontmatter import (
     FrontmatterError,
+    load_skill_frontmatter,
     model_invocation_needs_update,
     update_skill_frontmatter,
 )
@@ -1031,25 +1032,9 @@ def read_skill_metadata(path: Path) -> Mapping[str, object]:
 
 def read_frontmatter(path: Path) -> Mapping[str, object]:
     try:
-        lines = path.read_text().splitlines()
-    except OSError, UnicodeError:
+        return load_skill_frontmatter(path)
+    except OSError, UnicodeError, yaml.YAMLError:
         return {}
-    if not lines or lines[0].strip() != "---":
-        return {}
-
-    body: list[str] = []
-    for line in lines[1:]:
-        if line.strip() == "---":
-            break
-        body.append(line)
-    else:
-        return {}
-
-    try:
-        data = yaml.safe_load("\n".join(body))
-    except yaml.YAMLError:
-        return {}
-    return data if isinstance(data, dict) else {}
 
 
 def metadata_string(metadata: Mapping[str, object], key: str) -> str:

@@ -13,7 +13,7 @@ from typing import Any
 
 import yaml
 
-from .frontmatter import read_frontmatter_body, update_skill_frontmatter
+from .frontmatter import load_skill_frontmatter, update_skill_frontmatter
 from .io import build_removal_guard, remove_guarded_directory
 from .manifest import SkillSpec, SourceSpec
 
@@ -372,7 +372,7 @@ def removable_skill_provenance(candidate: Path) -> tuple[str, str] | None:
     if candidate.is_symlink() or not candidate.is_dir():
         return None
     try:
-        raw_yaml, _ = read_frontmatter_body((candidate / "SKILL.md").read_text())
+        raw_yaml = load_skill_frontmatter(candidate / "SKILL.md")
     except OSError, UnicodeError, yaml.YAMLError:
         return None
     metadata = raw_yaml.get("metadata")

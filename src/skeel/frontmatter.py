@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+import frontmatter
 import yaml
 
 
@@ -14,23 +15,19 @@ class FrontmatterError(ValueError):
     pass
 
 
-def read_frontmatter_body(text: str) -> tuple[dict[str, Any], str]:
-    lines = text.splitlines(keepends=True)
-    if not lines or lines[0].strip() != "---":
-        return {}, text
-    for index, line in enumerate(lines[1:], start=1):
-        if line.strip() != "---":
-            continue
-        data = yaml.safe_load("".join(lines[1:index])) or {}
-        if not isinstance(data, dict):
-            data = {}
-        return dict(data), "".join(lines[index + 1 :])
-    return {}, text
+def load_skill_frontmatter(path: Path) -> dict[str, Any]:
+    return dict(frontmatter.load(path, encoding="utf-8").metadata)
 
 
-def serialize_frontmatter(data: dict[str, Any], body: str) -> str:
-    dumped = yaml.safe_dump(data, sort_keys=False, allow_unicode=True, width=4096)
-    return f"---\n{dumped}---\n{body}"
+def dump_skill_frontmatter(post: frontmatter.Post) -> str:
+    text = frontmatter.dumps(
+        post,
+        Dumper=yaml.SafeDumper,
+        sort_keys=False,
+        allow_unicode=True,
+        width=4096,
+    )
+    return text.rstrip("\n") + "\n"
 
 
 def update_skill_frontmatter(
@@ -43,20 +40,20 @@ def update_skill_frontmatter(
     if root is not None:
         validate_frontmatter_target(path, root)
     original_text = path.read_text(encoding="utf-8")
-    raw_yaml, body = read_frontmatter_body(original_text)
+    post = frontmatter.loads(original_text, encoding="utf-8")
     if disable_model_invocation is not None:
-        raw_yaml["disable-model-invocation"] = disable_model_invocation
+        post["disable-model-invocation"] = disable_model_invocation
     if managed_metadata:
-        metadata = raw_yaml.get("metadata")
+        metadata = post.get("metadata")
         if not isinstance(metadata, dict):
             metadata = {}
-            raw_yaml["metadata"] = metadata
+            post["metadata"] = metadata
         for key, value in managed_metadata.items():
             if value is None:
                 metadata.pop(key, None)
             else:
                 metadata[key] = copy.deepcopy(value)
-    merged_text = serialize_frontmatter(raw_yaml, body)
+    merged_text = dump_skill_frontmatter(post)
     if merged_text == original_text:
         return False
     atomic_write(path, merged_text)
@@ -72,10 +69,10 @@ def model_invocation_needs_update(
     try:
         if root is not None:
             validate_frontmatter_target(path, root)
-        raw_yaml, _ = read_frontmatter_body(path.read_text(encoding="utf-8"))
+        metadata = load_skill_frontmatter(path)
     except OSError, UnicodeError, yaml.YAMLError, FrontmatterError:
         return True
-    return raw_yaml.get("disable-model-invocation") is not disabled
+    return metadata.get("disable-model-invocation") is not disabled
 
 
 def validate_frontmatter_target(path: Path, root: Path) -> None:
