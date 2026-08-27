@@ -35,11 +35,11 @@ sources:
   mavam/quarto-brief:
   openclaw/gogcli:
     - gog
-  tenzir/skills:
+  acme/skills:
     pin: main
     skills:
-      - tenzir-ecs
-      - name: tenzir-commit-changes
+      - code-review
+      - name: deploy
         frontmatter:
           disable-model-invocation: true
           compatibility: Requires Git
