@@ -1,0 +1,9 @@
+created: 2026-08-27
+title: Skill frontmatter overrides
+intro: >-
+  Skeel now lets you customize frontmatter for explicitly selected skills directly
+  in the manifest. It applies and reconciles these overrides during installation and
+  updates, and reports unapplied values in diff output.
+source:
+  mode: sync-stable-queue
+  previous_stable: v2.0.2
