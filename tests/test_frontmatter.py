@@ -1,8 +1,9 @@
 from pathlib import Path
 
+import pytest
 import yaml
 
-from skeel.frontmatter import frontmatter_needs_update, update_skill_frontmatter
+from skeel.frontmatter import FrontmatterError, frontmatter_needs_update, update_skill_frontmatter
 
 
 def read_frontmatter(path: Path) -> dict[str, object]:
@@ -48,6 +49,40 @@ def test_update_skill_frontmatter_merges_metadata(tmp_path: Path) -> None:
     }
 
 
+def test_update_skill_frontmatter_creates_metadata_map(tmp_path: Path) -> None:
+    path = tmp_path / "SKILL.md"
+    path.write_text("---\nname: test\n---\n# Test\n")
+
+    update_skill_frontmatter(path, overrides={"metadata": {"category": "deployment"}})
+
+    assert read_frontmatter(path)["metadata"] == {"category": "deployment"}
+
+
+def test_update_skill_frontmatter_rejects_symlinked_file(tmp_path: Path) -> None:
+    real = tmp_path / "real.md"
+    real.write_text("---\nname: test\n---\n# Test\n")
+    path = tmp_path / "SKILL.md"
+    path.symlink_to(real)
+
+    with pytest.raises(FrontmatterError, match="symlinked SKILL.md"):
+        update_skill_frontmatter(
+            path,
+            overrides={"compatibility": "Requires Docker"},
+            root=tmp_path,
+        )
+
+
+def test_update_skill_frontmatter_rejects_missing_target(tmp_path: Path) -> None:
+    path = tmp_path / "SKILL.md"
+
+    with pytest.raises(FrontmatterError, match="could not resolve frontmatter target"):
+        update_skill_frontmatter(
+            path,
+            overrides={"compatibility": "Requires Docker"},
+            root=tmp_path,
+        )
+
+
 def test_update_skill_frontmatter_preserves_readable_unicode(tmp_path: Path) -> None:
     path = tmp_path / "SKILL.md"
     path.write_text(
@@ -80,3 +115,5 @@ def test_frontmatter_needs_update_compares_only_configured_values(
         },
     )
     assert frontmatter_needs_update(path, {"compatibility": "Requires Docker"})
+    assert frontmatter_needs_update(path, {"metadata": {"category": "other"}})
+    assert frontmatter_needs_update(path, {"metadata": {"missing": "value"}})

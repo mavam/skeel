@@ -707,6 +707,7 @@ def dry_run_step_result(
             label=step.label,
             command=[],
             returncode=None,
+            status="updated",
             detail=step.preview_detail,
             scope=step.scope,
         )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import os
+import stat
 import tempfile
 from collections.abc import Mapping
 from pathlib import Path
@@ -12,6 +13,10 @@ import yaml
 
 
 class FrontmatterError(ValueError):
+    pass
+
+
+class FrontmatterAmbiguityError(FrontmatterError):
     pass
 
 
@@ -112,7 +117,7 @@ def atomic_write(path: Path, text: str) -> None:
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as output:
             output.write(text)
-        os.chmod(temporary, mode)
+        os.chmod(temporary, stat.S_IMODE(mode))
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)

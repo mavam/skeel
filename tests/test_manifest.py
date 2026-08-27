@@ -138,6 +138,22 @@ sources:
         load_manifest(path)
 
 
+def test_load_manifest_rejects_source_level_frontmatter(tmp_path: Path) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  example/skills:
+    skills: [deploy]
+    frontmatter:
+      compatibility: Requires Docker
+""",
+    )
+
+    with pytest.raises(ValueError, match="belongs on an individual skill"):
+        load_manifest(path)
+
+
 def test_old_source_list_is_rejected(tmp_path: Path) -> None:
     path = write_manifest(
         tmp_path,
@@ -193,6 +209,27 @@ def test_upsert_manifest_source_writes_keyed_schema(tmp_path: Path) -> None:
     assert path.read_text() == (
         "sources:\n  tenzir/skills:\n    - tenzir-docs@main\n  mavam/quarto-brief:\n"
     )
+
+
+def test_upsert_manifest_source_preserves_skill_options(tmp_path: Path) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  example/skills:
+    skills:
+      - name: deploy
+        pin: v1
+        frontmatter:
+          compatibility: Requires Docker
+""",
+    )
+
+    unchanged = upsert_manifest_source(path, "example/skills", "deploy")
+    assert not unchanged.changed
+    assert load_manifest(path).sources[0].skills[0].frontmatter == {
+        "compatibility": "Requires Docker"
+    }
 
 
 def test_upsert_manifest_source_dry_run_does_not_write(tmp_path: Path) -> None:

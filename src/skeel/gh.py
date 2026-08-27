@@ -20,6 +20,7 @@ from .fast_install import (
     supports_fast_install,
 )
 from .frontmatter import (
+    FrontmatterAmbiguityError,
     FrontmatterError,
     frontmatter_needs_update,
     load_skill_frontmatter,
@@ -204,7 +205,14 @@ def manual_install_executor(
         missing: list[str] = []
         for skill in verify:
             try:
-                resolve_installed_frontmatter_path(source.source, target, skill)
+                resolve_installed_frontmatter_path(
+                    source.source,
+                    target,
+                    skill,
+                    scan=bool(skill.frontmatter),
+                )
+            except FrontmatterAmbiguityError as error:
+                return replace(result, returncode=1, stderr=str(error))
             except FrontmatterError:
                 missing.append(skill.name)
         if missing:
@@ -344,7 +352,6 @@ def frontmatter_step(
     root: Path,
 ) -> SkillStep:
     overrides = skill.frontmatter
-    assert overrides
 
     async def execute() -> ProcessResult:
         result = ProcessResult(command=[], returncode=0)
@@ -387,7 +394,6 @@ def install_frontmatter_postprocessor(
             path = resolve_installed_frontmatter_path(source, target, skill)
         except FrontmatterError as error:
             return replace(result, returncode=1, stderr=str(error))
-        assert bool(skill.frontmatter)
         return frontmatter_postprocessor(
             path,
             target.directory,
@@ -401,6 +407,8 @@ def resolve_installed_frontmatter_path(
     source: str,
     target: SkillTarget,
     skill: SkillSpec,
+    *,
+    scan: bool = True,
 ) -> Path:
     requested = skill_command_label(skill).removesuffix("/SKILL.md").rstrip("/")
     inferred_name = Path(requested).name
@@ -409,6 +417,11 @@ def resolve_installed_frontmatter_path(
         path = target.directory / name / "SKILL.md"
         if path.is_file():
             return path
+
+    if not scan:
+        raise FrontmatterError(
+            f'installed skill "{skill.name}" has no SKILL.md in {target.directory}'
+        )
 
     aliases = {skill.name, inferred_name}
     matches: list[Path] = []
@@ -434,7 +447,7 @@ def resolve_installed_frontmatter_path(
     if len(matches) == 1:
         return matches[0]
     if len(matches) > 1:
-        raise FrontmatterError(f'frontmatter target for skill "{skill.name}" is ambiguous')
+        raise FrontmatterAmbiguityError(f'frontmatter target for skill "{skill.name}" is ambiguous')
     raise FrontmatterError(f'installed skill "{skill.name}" has no SKILL.md in {target.directory}')
 
 

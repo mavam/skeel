@@ -712,6 +712,8 @@ def remove_all_json(
 
 
 def install_failure_message(step: StepResult) -> str:
+    if not step.command and step.detail:
+        return f"failed to update skill frontmatter: {step.label}"
     return f"failed to install skill: {step.label}"
 
 

@@ -1676,6 +1676,31 @@ sources:
     assert "process stderr" in captured.err
 
 
+def test_frontmatter_dry_run_reports_updated_status(tmp_path: Path) -> None:
+    runtime = Runtime(
+        manifest_path=Path("manifest.yaml"),
+        manifest_required=False,
+        target=SkillTarget(directory=tmp_path),
+        runner=ProcessRunner(),
+        terminal=Terminal(json_output=True),
+    )
+    steps = (
+        SkillStep(
+            label="example/skills@deploy",
+            command=[],
+            kind="frontmatter",
+            preview_detail="compatibility",
+        ),
+    )
+
+    results, exit_code = asyncio.run(
+        run_steps(steps, runtime, dry_run=True, dry_run_action="would install")
+    )
+
+    assert exit_code == 0
+    assert results[0].status == "updated"
+
+
 def test_run_steps_carries_step_scope_into_results(tmp_path: Path) -> None:
     class Runner:
         async def run(self, command, **kwargs):

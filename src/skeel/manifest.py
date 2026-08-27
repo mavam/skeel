@@ -146,6 +146,8 @@ def parse_source(source: Any, value: Any) -> SourceSpec:
         raise ValueError("source entries use mapping keys, not source/github fields")
     if "backend" in value:
         raise ValueError("manifest backends are not supported; skeel always uses gh skill")
+    if "frontmatter" in value:
+        raise ValueError("frontmatter belongs on an individual skill, not a source")
 
     install = tuple(parse_command(command) for command in value.get("install") or [])
     source_pin = value.get("pin")
@@ -372,10 +374,21 @@ def remove_source_skill(sources: dict[Any, Any], source: str, skill: str) -> boo
 def upsert_skill(skills: list[Any], skill: str) -> bool:
     desired = parse_skill(skill)
     for index, current in enumerate(skills):
-        if parse_skill(current).name == desired.name:
-            if current == skill:
+        parsed = parse_skill(current)
+        if parsed.name == desired.name:
+            if parsed.spec == desired.spec:
                 return False
-            skills[index] = skill
+            if isinstance(current, dict):
+                updated = dict(current)
+                if "spec" in updated:
+                    updated["spec"] = skill
+                elif "path" in updated:
+                    updated["path"] = skill
+                else:
+                    updated["spec"] = skill
+                skills[index] = updated
+            else:
+                skills[index] = skill
             return True
     skills.append(skill)
     return True
