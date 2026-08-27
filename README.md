@@ -49,9 +49,9 @@ selected skills. Use a nested mapping for source options, such as `pin` or custo
 the canonical field to the installed `SKILL.md` and reapplies it after updates. The
 `diff` command reports configured values that still need to be applied.
 
-Setting `disable-model-invocation: true` prevents Claude Code from loading a skill
-automatically while keeping manual invocation available. Set it to `false` to allow
-automatic invocation explicitly. Removing the option stops skeel from managing the
+Setting `disable-model-invocation: true` prevents compatible agents from loading a
+skill automatically while keeping manual invocation available. Set it to `false` to
+allow automatic invocation explicitly. Removing the option stops skeel from managing the
 field; use `apply --reinstall` if you want to restore the upstream file immediately.
 Other agents may ignore this field.
 

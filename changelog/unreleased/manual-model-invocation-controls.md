@@ -18,4 +18,4 @@ sources:
         disable-model-invocation: true
 ```
 
-This keeps the skill user-invocable without allowing Claude Code to load it automatically. The `diff` command reports configured values that haven't been applied yet.
+This keeps the skill user-invocable without allowing compatible agents to load it automatically. The `diff` command reports configured values that haven't been applied yet.
