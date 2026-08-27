@@ -40,24 +40,25 @@ sources:
     skills:
       - tenzir-ecs
       - name: tenzir-commit-changes
-        disable-model-invocation: true
+        frontmatter:
+          disable-model-invocation: true
+          compatibility: Requires Git
 ```
 
 An empty value installs all skills from a source. A list is the common form for
-selected skills. Use a nested mapping for source options, such as `pin` or custom
-`install` commands, or to set `disable-model-invocation` for one skill. Skeel writes
-the canonical field to the installed `SKILL.md` and reapplies it after updates. The
-`diff` command reports configured values that still need to be applied.
+selected skills. Use a nested mapping for source options, such as `pin`, custom
+`install` commands, or `frontmatter` overrides for one skill. Skeel applies configured
+top-level fields to the installed `SKILL.md`, reapplies them after updates, and reports
+drift through `diff`.
 
-Setting `disable-model-invocation: true` prevents compatible agents from loading a
-skill automatically while keeping manual invocation available. Set it to `false` to
-allow automatic invocation explicitly. Removing the option stops skeel from managing the
-field; use `apply --reinstall` if you want to restore the upstream file immediately.
-Other agents may ignore this field.
+Frontmatter overrides are shallow: scalar and list values replace upstream values,
+while `metadata` entries merge with the upstream map. The skill `name` and skeel's
+`github-*` provenance metadata cannot be overridden. Removing a field stops skeel from
+managing it; use `apply --reinstall` to restore upstream content immediately.
 
 During `update`, selected skills refresh independently, while an install-all source
-refreshes once and discovers newly added upstream skills. Model-invocation settings
-require an explicit skill entry and don't apply to install-all sources.
+refreshes once and discovers newly added upstream skills. Frontmatter overrides require
+an explicit skill entry and don't apply to install-all sources.
 
 By default, `skeel` uses project scope: `.agents/skills.yaml` and
 `.agents/skills` in the current working directory. Use `-g` or `--scope user`

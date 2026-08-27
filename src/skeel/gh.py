@@ -21,8 +21,8 @@ from .fast_install import (
 )
 from .frontmatter import (
     FrontmatterError,
+    frontmatter_needs_update,
     load_skill_frontmatter,
-    model_invocation_needs_update,
     update_skill_frontmatter,
 )
 from .io import (
@@ -142,9 +142,7 @@ def manual_install_steps(
         final = index == len(source.install) - 1
         verify = source.skills if final else ()
         overridden = (
-            tuple(skill for skill in source.skills if skill.disable_model_invocation is not None)
-            if final
-            else ()
+            tuple(skill for skill in source.skills if bool(skill.frontmatter)) if final else ()
         )
         steps.append(
             SkillStep(
@@ -187,7 +185,8 @@ def source_frontmatter_postprocessor(
 
 
 def source_frontmatter_preview(skills: Sequence[SkillSpec]) -> str | None:
-    return "disable-model-invocation" if skills else None
+    keys = dict.fromkeys(key for skill in skills for key in skill.frontmatter)
+    return ", ".join(keys) or None
 
 
 def manual_install_executor(
@@ -315,14 +314,14 @@ def frontmatter_steps(
             )
             if current is None or not installed_source_matches(current, source):
                 continue
-            if skill.disable_model_invocation is None:
+            if not skill.frontmatter:
                 continue
             frontmatter_path = current.path / "SKILL.md"
             if frontmatter_path in seen or not frontmatter_path.is_file():
                 continue
-            if not model_invocation_needs_update(
+            if not frontmatter_needs_update(
                 frontmatter_path,
-                skill.disable_model_invocation,
+                skill.frontmatter,
                 root=target.directory,
             ):
                 continue
@@ -344,14 +343,14 @@ def frontmatter_step(
     path: Path,
     root: Path,
 ) -> SkillStep:
-    disabled = skill.disable_model_invocation
-    assert disabled is not None
+    overrides = skill.frontmatter
+    assert overrides
 
     async def execute() -> ProcessResult:
         result = ProcessResult(command=[], returncode=0)
-        return frontmatter_postprocessor(path, root, disabled)(result)
+        return frontmatter_postprocessor(path, root, overrides)(result)
 
-    detail = model_invocation_preview_detail(disabled)
+    detail = frontmatter_preview_detail(overrides)
     return SkillStep(
         label=source_skill_label(source, skill.name),
         command=[],
@@ -366,15 +365,11 @@ def frontmatter_step(
 def frontmatter_postprocessor(
     path: Path,
     root: Path,
-    disabled: bool,
+    overrides: Mapping[str, object],
 ) -> StepPostprocessor:
     def postprocess(result: ProcessResult) -> ProcessResult:
         try:
-            update_skill_frontmatter(
-                path,
-                disable_model_invocation=disabled,
-                root=root,
-            )
+            update_skill_frontmatter(path, overrides=overrides, root=root)
         except (OSError, UnicodeError, yaml.YAMLError, FrontmatterError, ValueError) as error:
             return replace(result, returncode=1, stderr=str(error))
         return result
@@ -392,11 +387,11 @@ def install_frontmatter_postprocessor(
             path = resolve_installed_frontmatter_path(source, target, skill)
         except FrontmatterError as error:
             return replace(result, returncode=1, stderr=str(error))
-        assert skill.disable_model_invocation is not None
+        assert bool(skill.frontmatter)
         return frontmatter_postprocessor(
             path,
             target.directory,
-            skill.disable_model_invocation,
+            skill.frontmatter,
         )(result)
 
     return postprocess
@@ -443,9 +438,8 @@ def resolve_installed_frontmatter_path(
     raise FrontmatterError(f'installed skill "{skill.name}" has no SKILL.md in {target.directory}')
 
 
-def model_invocation_preview_detail(disabled: bool) -> str:
-    value = str(disabled).lower()
-    return f"disable-model-invocation={value}"
+def frontmatter_preview_detail(overrides: Mapping[str, object]) -> str:
+    return ", ".join(overrides)
 
 
 def install_steps(
@@ -487,9 +481,9 @@ def install_steps(
             )
         postprocess = None
         preview_detail = None
-        if skill is not None and skill.disable_model_invocation is not None:
+        if skill is not None and bool(skill.frontmatter):
             postprocess = install_frontmatter_postprocessor(source.source, target, skill)
-            preview_detail = model_invocation_preview_detail(skill.disable_model_invocation)
+            preview_detail = frontmatter_preview_detail(skill.frontmatter)
         steps.append(
             SkillStep(
                 label=label,
@@ -787,16 +781,16 @@ def with_update_frontmatter(
     desired: SkillSpec,
     target: SkillTarget,
 ) -> SkillStep:
-    if desired.disable_model_invocation is None:
+    if not desired.frontmatter:
         return step
     return replace(
         step,
         postprocess=frontmatter_postprocessor(
             installed.path / "SKILL.md",
             target.directory,
-            desired.disable_model_invocation,
+            desired.frontmatter,
         ),
-        preview_detail=model_invocation_preview_detail(desired.disable_model_invocation),
+        preview_detail=frontmatter_preview_detail(desired.frontmatter),
     )
 
 

@@ -48,7 +48,7 @@ def test_apply_preserves_extras_by_default(tmp_path: Path) -> None:
     assert [step.kind for step in pruned] == ["command", "remove"]
 
 
-def test_apply_reconciles_model_invocation_setting(tmp_path: Path) -> None:
+def test_apply_reconciles_frontmatter(tmp_path: Path) -> None:
     target = SkillTarget(directory=tmp_path, scope="project")
     skill_path = tmp_path / "deploy"
     skill_path.mkdir()
@@ -63,7 +63,7 @@ def test_apply_reconciles_model_invocation_setting(tmp_path: Path) -> None:
                 SkillSpec(
                     spec="deploy",
                     name="deploy",
-                    disable_model_invocation=True,
+                    frontmatter={"disable-model-invocation": True},
                 ),
             ),
         )
@@ -101,7 +101,7 @@ def test_frontmatter_diff_reports_pending_override(tmp_path: Path) -> None:
                 SkillSpec(
                     spec="deploy",
                     name="deploy",
-                    disable_model_invocation=True,
+                    frontmatter={"disable-model-invocation": True},
                 ),
             ),
         )
@@ -141,7 +141,7 @@ def test_apply_refuses_frontmatter_override_through_external_symlink(tmp_path: P
                 SkillSpec(
                     spec="deploy",
                     name="deploy",
-                    disable_model_invocation=True,
+                    frontmatter={"disable-model-invocation": True},
                 ),
             ),
         )

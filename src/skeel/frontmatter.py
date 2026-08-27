@@ -33,7 +33,7 @@ def dump_skill_frontmatter(post: frontmatter.Post) -> str:
 def update_skill_frontmatter(
     path: Path,
     *,
-    disable_model_invocation: bool | None = None,
+    overrides: Mapping[str, Any] | None = None,
     managed_metadata: Mapping[str, Any] | None = None,
     root: Path | None = None,
 ) -> bool:
@@ -41,8 +41,16 @@ def update_skill_frontmatter(
         validate_frontmatter_target(path, root)
     original_text = path.read_text(encoding="utf-8")
     post = frontmatter.loads(original_text, encoding="utf-8")
-    if disable_model_invocation is not None:
-        post["disable-model-invocation"] = disable_model_invocation
+    if overrides:
+        for key, value in overrides.items():
+            if key == "metadata" and isinstance(value, Mapping):
+                metadata = post.get("metadata")
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                    post["metadata"] = metadata
+                metadata.update(copy.deepcopy(value))
+            else:
+                post[key] = copy.deepcopy(value)
     if managed_metadata:
         metadata = post.get("metadata")
         if not isinstance(metadata, dict):
@@ -60,9 +68,9 @@ def update_skill_frontmatter(
     return True
 
 
-def model_invocation_needs_update(
+def frontmatter_needs_update(
     path: Path,
-    disabled: bool,
+    overrides: Mapping[str, Any],
     *,
     root: Path | None = None,
 ) -> bool:
@@ -72,7 +80,17 @@ def model_invocation_needs_update(
         metadata = load_skill_frontmatter(path)
     except OSError, UnicodeError, yaml.YAMLError, FrontmatterError:
         return True
-    return metadata.get("disable-model-invocation") is not disabled
+    for key, value in overrides.items():
+        if key == "metadata" and isinstance(value, Mapping):
+            installed = metadata.get("metadata")
+            if not isinstance(installed, Mapping) or any(
+                installed.get(metadata_key) != metadata_value
+                for metadata_key, metadata_value in value.items()
+            ):
+                return True
+        elif metadata.get(key) != value:
+            return True
+    return False
 
 
 def validate_frontmatter_target(path: Path, root: Path) -> None:

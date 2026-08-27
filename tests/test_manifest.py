@@ -79,49 +79,7 @@ sources:
     )
 
 
-@pytest.mark.parametrize("disabled", [True, False])
-def test_load_manifest_model_invocation_setting(tmp_path: Path, disabled: bool) -> None:
-    value = str(disabled).lower()
-    path = write_manifest(
-        tmp_path,
-        f"""
-sources:
-  example/skills:
-    skills:
-      - name: deploy
-        disable-model-invocation: {value}
-""",
-    )
-
-    source = load_manifest(path).sources[0]
-    skill = source.skills[0]
-
-    assert skill.disable_model_invocation is disabled
-    assert isinstance(hash(skill), int)
-    assert isinstance(hash(source), int)
-
-
-@pytest.mark.parametrize("value", ["manual", "1", "null"])
-def test_load_manifest_rejects_non_boolean_model_invocation_setting(
-    tmp_path: Path,
-    value: str,
-) -> None:
-    path = write_manifest(
-        tmp_path,
-        f"""
-sources:
-  example/skills:
-    skills:
-      - name: deploy
-        disable-model-invocation: {value}
-""",
-    )
-
-    with pytest.raises(ValueError, match="must be a boolean"):
-        load_manifest(path)
-
-
-def test_load_manifest_rejects_generic_frontmatter_overrides(tmp_path: Path) -> None:
+def test_load_manifest_frontmatter_overrides(tmp_path: Path) -> None:
     path = write_manifest(
         tmp_path,
         """
@@ -131,10 +89,52 @@ sources:
       - name: deploy
         frontmatter:
           disable-model-invocation: true
+          compatibility: Requires Docker
+          metadata:
+            category: deployment
 """,
     )
 
-    with pytest.raises(ValueError, match="frontmatter overrides are not supported"):
+    source = load_manifest(path).sources[0]
+    skill = source.skills[0]
+
+    assert skill.frontmatter == {
+        "disable-model-invocation": True,
+        "compatibility": "Requires Docker",
+        "metadata": {"category": "deployment"},
+    }
+    assert isinstance(hash(skill), int)
+    assert isinstance(hash(source), int)
+
+
+@pytest.mark.parametrize(
+    ("frontmatter", "message"),
+    [
+        ("manual", "must be a mapping"),
+        ("{1: value}", "string keys"),
+        ("{name: renamed}", "cannot override name"),
+        ("{metadata: value}", "metadata must be a mapping"),
+        ("{metadata: null}", "metadata must be a mapping"),
+        ("{metadata: {github-repo: other/repo}}", "provenance metadata"),
+    ],
+)
+def test_load_manifest_rejects_invalid_frontmatter(
+    tmp_path: Path,
+    frontmatter: str,
+    message: str,
+) -> None:
+    path = write_manifest(
+        tmp_path,
+        f"""
+sources:
+  example/skills:
+    skills:
+      - name: deploy
+        frontmatter: {frontmatter}
+""",
+    )
+
+    with pytest.raises(ValueError, match=message):
         load_manifest(path)
 
 

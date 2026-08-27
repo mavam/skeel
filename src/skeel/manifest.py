@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import copy
 import os
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +17,7 @@ class SkillSpec:
     spec: str
     name: str
     pin: str | None = None
-    disable_model_invocation: bool | None = None
+    frontmatter: dict[str, Any] = field(default_factory=dict, hash=False)
 
 
 @dataclass(frozen=True)
@@ -106,21 +107,24 @@ def parse_skill(value: Any, *, source_pin: str | None = None) -> SkillSpec:
         raise ValueError(f"skill entry missing name/spec/path: {value!r}")
     name = str(value.get("name") or infer_skill_name(spec))
     pin = value.get("pin", source_pin)
-    disable_model_invocation = value.get("disable-model-invocation")
-    if "disable-model-invocation" in value and not isinstance(
-        disable_model_invocation,
-        bool,
+    raw_frontmatter = value.get("frontmatter", {})
+    if not isinstance(raw_frontmatter, dict) or not all(
+        isinstance(key, str) for key in raw_frontmatter
     ):
-        raise ValueError("skill disable-model-invocation must be a boolean")
-    if "frontmatter" in value:
-        raise ValueError(
-            "skill frontmatter overrides are not supported; use disable-model-invocation instead"
-        )
+        raise ValueError("skill frontmatter must be a mapping with string keys")
+    if "name" in raw_frontmatter:
+        raise ValueError("skill frontmatter cannot override name")
+    metadata = raw_frontmatter.get("metadata")
+    if "metadata" in raw_frontmatter:
+        if not isinstance(metadata, dict) or not all(isinstance(key, str) for key in metadata):
+            raise ValueError("skill frontmatter metadata must be a mapping with string keys")
+        if any(key.startswith("github-") for key in metadata):
+            raise ValueError("skill frontmatter cannot override skeel provenance metadata")
     return SkillSpec(
         spec=spec,
         name=name,
         pin=str(pin) if pin else None,
-        disable_model_invocation=disable_model_invocation,
+        frontmatter=copy.deepcopy(raw_frontmatter),
     )
 
 

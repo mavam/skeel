@@ -1566,7 +1566,7 @@ sources:
     ]
 
 
-def test_diff_json_reports_model_invocation_changes(tmp_path, capsys, monkeypatch) -> None:
+def test_diff_json_reports_frontmatter_changes(tmp_path, capsys, monkeypatch) -> None:
     path = write_manifest(
         tmp_path,
         """
@@ -1574,7 +1574,8 @@ sources:
   example/skills:
     skills:
       - name: deploy
-        disable-model-invocation: true
+        frontmatter:
+          disable-model-invocation: true
 """,
     )
     target = tmp_path / ".agents" / "skills"

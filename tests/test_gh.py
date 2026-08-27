@@ -80,14 +80,14 @@ def test_install_steps_cover_selected_and_all_skills() -> None:
     assert "--all" in dynamic_step.command
 
 
-def test_install_steps_set_model_invocation_after_install(tmp_path: Path) -> None:
+def test_install_steps_apply_frontmatter_after_install(tmp_path: Path) -> None:
     source = SourceSpec(
         source="example/skills",
         skills=(
             SkillSpec(
                 spec="deploy",
                 name="deploy-alias",
-                disable_model_invocation=True,
+                frontmatter={"disable-model-invocation": True},
             ),
         ),
     )
@@ -99,7 +99,7 @@ def test_install_steps_set_model_invocation_after_install(tmp_path: Path) -> Non
 
     assert step.label == "example/skills@deploy-alias"
     assert step.postprocess is not None
-    assert step.preview_detail == "disable-model-invocation=true"
+    assert step.preview_detail == "disable-model-invocation"
     result = step.postprocess(ProcessResult(command=step.command, returncode=0))
     assert result.returncode == 0
     frontmatter = (skill_path / "SKILL.md").read_text().split("---", 2)[1]
@@ -147,14 +147,14 @@ def test_manual_install_steps() -> None:
     assert step.executor is not None
 
 
-def test_manual_install_steps_set_model_invocation(tmp_path: Path) -> None:
+def test_manual_install_steps_apply_frontmatter(tmp_path: Path) -> None:
     source = SourceSpec(
         source="custom/installer",
         skills=(
             SkillSpec(
                 spec="deploy",
                 name="deploy",
-                disable_model_invocation=True,
+                frontmatter={"disable-model-invocation": True},
             ),
         ),
         install=(("install-custom",),),
@@ -323,7 +323,7 @@ def test_installed_skills_rejects_old_gh_version(tmp_path: Path) -> None:
     assert runner.calls == [["gh", "--version"]]
 
 
-def test_update_steps_reapply_model_invocation_setting(tmp_path: Path) -> None:
+def test_update_steps_reapply_frontmatter(tmp_path: Path) -> None:
     skill_path = tmp_path / "deploy"
     write_skill(
         skill_path,
@@ -343,7 +343,7 @@ def test_update_steps_reapply_model_invocation_setting(tmp_path: Path) -> None:
                     SkillSpec(
                         spec="deploy",
                         name="deploy",
-                        disable_model_invocation=True,
+                        frontmatter={"disable-model-invocation": True},
                     ),
                 ),
             ),
@@ -354,7 +354,7 @@ def test_update_steps_reapply_model_invocation_setting(tmp_path: Path) -> None:
 
     assert step.label == "example/skills@deploy-service"
     assert step.postprocess is not None
-    assert step.preview_detail == "disable-model-invocation=true"
+    assert step.preview_detail == "disable-model-invocation"
     result = step.postprocess(ProcessResult(command=step.command, returncode=0))
     assert result.returncode == 0
     frontmatter = yaml.safe_load((skill_path / "SKILL.md").read_text().split("---", 2)[1])
