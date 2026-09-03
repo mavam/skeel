@@ -1,0 +1,9 @@
+created: 2026-09-03
+title: Local names for installed skills
+intro: >-
+  This release lets you install selected skills under custom local names while preserving
+  their upstream identity. Existing matching installations migrate in place, keeping
+  local directories and skill metadata aligned.
+source:
+  mode: sync-stable-queue
+  previous_stable: v2.1.0
