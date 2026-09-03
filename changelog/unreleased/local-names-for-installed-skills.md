@@ -3,7 +3,9 @@ title: Local names for installed skills
 type: feature
 authors:
   - mavam
-created: 2026-09-03T18:56:47.928325Z
+prs:
+  - 25
+created: 2026-09-03T19:11:10.503807Z
 ---
 
 You can now install an explicitly selected skill under a different local name by combining the manifest's `spec` and `name` fields or by passing `--name` to `skeel add`:
