@@ -69,6 +69,8 @@ class FastInstallSession:
         prune: bool = False,
     ) -> FastInstallResult:
         pin = effective_pin(source, skill)
+        if pin is None and skill is not None and skill.renamed:
+            pin = self._default_branch()
         if pin is None:
             raise FastInstallError("fast install requires an explicit pin")
 
@@ -87,6 +89,7 @@ class FastInstallSession:
                 tree_sha=tree_sha,
                 skill=selected_skill,
                 directory=directory,
+                local_name=skill.name if skill is not None else selected_skill.name,
             )
 
         if prune and skill is None and repository_tree.complete:
@@ -121,6 +124,14 @@ class FastInstallSession:
             remote_tree.directory_shas.get(path) == tree_sha
             for path, (_, tree_sha) in installed_inventory.items()
         )
+
+    def _default_branch(self) -> str:
+        result = gh_api_json(f"repos/{self.source}")
+        assert result is not None
+        branch = value_as_str(result.get("default_branch"))
+        if not branch:
+            raise FastInstallError(f"could not resolve default branch for {self.source}")
+        return branch
 
     def _resolve_ref(self, pin: str) -> ResolvedRef:
         with self._lock:
@@ -163,12 +174,12 @@ def supports_fast_install(source: SourceSpec, skill: SkillSpec | None) -> bool:
     return (
         not source.install
         and is_github_source(source.source)
-        and effective_pin(source, skill) is not None
+        and (effective_pin(source, skill) is not None or bool(skill and skill.renamed))
     )
 
 
 def fast_install_command(source: SourceSpec, skill: SkillSpec | None) -> list[str]:
-    pin = effective_pin(source, skill) or "<pin>"
+    pin = effective_pin(source, skill) or "HEAD"
     return ["gh", "api", f"repos/{source.source}/tarball/{pin}"]
 
 
@@ -310,9 +321,18 @@ def install_skill(
     tree_sha: str,
     skill: DiscoveredSkill,
     directory: Path,
+    local_name: str | None = None,
 ) -> None:
     owner, repo = source.split("/", 1)
-    target = directory / skill.name
+    installed_name = local_name or skill.name
+    target = directory / installed_name
+    if installed_name != skill.name and target.exists():
+        provenance = removable_skill_provenance(target)
+        expected = (f"https://github.com/{source}", skill.path)
+        if provenance != expected:
+            raise FastInstallError(
+                f'refusing to replace local skill "{installed_name}" from another source'
+            )
     if target.is_symlink():
         target.unlink()
     elif target.exists():
@@ -331,9 +351,10 @@ def install_skill(
         tree_sha=tree_sha,
         pinned_ref=pin,
         skill_path=skill.path,
+        local_name=installed_name,
     )
     record_lockfile(
-        skill_name=skill.name,
+        skill_name=installed_name,
         owner=owner,
         repo=repo,
         skill_path=f"{skill.path}/SKILL.md",
@@ -442,6 +463,7 @@ def inject_github_metadata(
     tree_sha: str,
     pinned_ref: str,
     skill_path: str,
+    local_name: str | None = None,
 ) -> None:
     managed_metadata = {
         "github-owner": None,
@@ -452,7 +474,36 @@ def inject_github_metadata(
         "github-path": skill_path,
         "github-pinned": pinned_ref or None,
     }
-    update_skill_frontmatter(path, managed_metadata=managed_metadata)
+    update_skill_frontmatter(
+        path,
+        overrides={"name": local_name} if local_name is not None else None,
+        managed_metadata=managed_metadata,
+    )
+
+
+def rename_lockfile_skill(
+    *,
+    old_name: str,
+    new_name: str,
+    source: str,
+    install_path: Path,
+) -> None:
+    path = Path.home() / ".agents" / ".skill-lock.json"
+    with LOCKFILE_LOCK:
+        if not path.exists():
+            return
+        data = read_lockfile(path)
+        skills = data.get("skills")
+        if not isinstance(skills, dict):
+            return
+        entry = skills.get(old_name)
+        if not isinstance(entry, dict) or entry.get("source") != source:
+            return
+        updated = dict(entry)
+        updated["installPath"] = str(install_path.resolve())
+        skills[new_name] = updated
+        del skills[old_name]
+        path.write_text(json.dumps(data, indent=2) + "\n")
 
 
 def record_lockfile(

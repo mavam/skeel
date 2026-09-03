@@ -735,6 +735,31 @@ def test_add_writes_manifest_in_keyed_shape(tmp_path, capsys, monkeypatch) -> No
     )
 
 
+def test_add_writes_renamed_skill(tmp_path, capsys, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    assert (
+        main(
+            [
+                "--json",
+                "add",
+                "elevenlabs/skills",
+                "agents",
+                "--name",
+                "elevenlabs-agents",
+            ]
+        )
+        == 0
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["name"] == "elevenlabs-agents"
+    assert payload["spec"] == "agents"
+    skill = load_manifest(tmp_path / ".agents" / "skills.yaml").sources[0].skills[0]
+    assert skill.name == "elevenlabs-agents"
+    assert skill.spec == "agents"
+
+
 def test_add_human_output_marks_user_scope(tmp_path, capsys, monkeypatch) -> None:
     home = tmp_path / "home"
     project = tmp_path / "project"
@@ -845,7 +870,7 @@ sources:
     assert [source.source for source in manifest.sources] == ["cloudflare/skills"]
 
 
-def test_remove_rejects_ambiguous_skill_name(tmp_path, capsys) -> None:
+def test_remove_rejects_duplicate_local_skill_name(tmp_path, capsys) -> None:
     path = write_manifest(
         tmp_path,
         """
@@ -862,11 +887,7 @@ sources:
 
     assert path.read_text() == original
     error = capsys.readouterr().err
-    assert '"wrangler" is ambiguous' in error
-    assert "tenzir/skills@wrangler" in error
-    assert "cloudflare/skills@wrangler" in error
-    assert "skeel remove <skill> --source" in error
-    assert "<source>" in error
+    assert 'duplicate local skill name in manifest: "wrangler"' in error
 
 
 def test_remove_unknown_skill_name_requires_manifest_match(tmp_path, capsys) -> None:
@@ -1627,6 +1648,7 @@ sources:
         "missing": [
             {
                 "name": "*",
+                "spec": "*",
                 "source": "example/skills",
                 "scope": "project",
                 "agent": "universal",

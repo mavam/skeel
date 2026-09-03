@@ -219,6 +219,7 @@ class UpdateOptions(CommonOptions, Protocol):
 class AddOptions(CommonOptions, Protocol):
     source: str
     skill: str | None
+    name: str | None
     apply: bool
 
 
@@ -573,6 +574,7 @@ def diff_json(
         "missing": [
             {
                 "name": skill.name,
+                "spec": skill.spec,
                 "source": skill.source,
                 **target_payload(inventory),
             }
@@ -590,7 +592,9 @@ def diff_json(
         "changed": [
             {
                 "name": skill.name,
+                "spec": skill.spec,
                 "source": skill.source,
+                **({"detail": skill.change} if skill.change else {}),
                 **target_payload(inventory),
             }
             for skill, inventory in changed
@@ -667,6 +671,7 @@ def add_json(
     manifest_path: Path,
     source: str,
     skill: str | None,
+    name: str | None,
     changed: bool,
     dry_run: bool,
 ) -> dict[str, object]:
@@ -677,7 +682,10 @@ def add_json(
         "changed": changed,
     }
     if skill is not None:
+        parsed = parse_skill({"spec": skill, "name": name} if name is not None else skill)
         payload["skill"] = skill
+        payload["name"] = parsed.name
+        payload["spec"] = parsed.spec
     return payload
 
 
@@ -771,7 +779,10 @@ async def command_diff(command: CommonOptions) -> int:
         terminal.diff(
             [(skill.name, skill.source, inventory.scope) for skill, inventory in missing],
             [(skill.name, skill.source_url or None, inventory.scope) for skill, inventory in extra],
-            [(skill.name, skill.source, inventory.scope) for skill, inventory in changed],
+            [
+                (skill.name, skill.source, inventory.scope, skill.change or "frontmatter")
+                for skill, inventory in changed
+            ],
             manifest_path=selection.contexts[0].manifest.path,
         )
     return 0 if not missing and not extra and not changed else 1
@@ -812,7 +823,7 @@ async def command_list(command: CommonOptions) -> int:
         terminal.status_line(
             MARKER_SUCCESS if row.status == "installed" else MARKER_FAILURE,
             row.label,
-            detail=row.version,
+            detail=list_row_detail(row),
             scope=row.scope,
         )
     return 0
@@ -1005,6 +1016,7 @@ async def command_add(command: AddOptions) -> int:
         runtime.manifest_path,
         command.source,
         command.skill,
+        name=command.name,
         dry_run=command.dry_run,
     )
     if not command.apply:
@@ -1014,6 +1026,7 @@ async def command_add(command: AddOptions) -> int:
                     manifest_path=runtime.manifest_path,
                     source=command.source,
                     skill=command.skill,
+                    name=command.name,
                     changed=update.changed,
                     dry_run=command.dry_run,
                 )
@@ -1254,6 +1267,15 @@ async def command_remove(command: RemoveOptions) -> int:
     )
 
 
+def list_row_detail(row: ListedSkill) -> str | None:
+    details = [row.version] if row.version else []
+    if row.spec is not None:
+        upstream = parse_skill(row.spec).name
+        if upstream != row.name:
+            details.append(f"({upstream})")
+    return " ".join(details) or None
+
+
 def add_status_line(
     terminal: Terminal,
     command: AddOptions,
@@ -1268,8 +1290,8 @@ def add_status_line(
         marker = MARKER_INSTALL if changed else MARKER_NOOP
     terminal.status_line(
         marker,
-        add_label(command.source, command.skill),
-        detail=str(manifest_path),
+        add_label(command.source, command.skill, command.name),
+        detail=add_detail(command.skill, command.name, manifest_path),
         scope=scope,
     )
 
@@ -1296,8 +1318,17 @@ def remove_status_line(
     )
 
 
-def add_label(source: str, skill: str | None) -> str:
-    return source_skill_label(source, parse_skill(skill).name if skill else "*")
+def add_label(source: str, skill: str | None, name: str | None = None) -> str:
+    if skill is None:
+        return source_skill_label(source, "*")
+    parsed = parse_skill({"spec": skill, "name": name} if name is not None else skill)
+    return source_skill_label(source, parsed.name)
+
+
+def add_detail(skill: str | None, name: str | None, manifest_path: Path) -> str:
+    if skill is not None and name is not None and parse_skill(skill).name != name:
+        return f"{manifest_path} ({parse_skill(skill).name})"
+    return str(manifest_path)
 
 
 async def command_update(command: UpdateOptions) -> int:
@@ -1580,6 +1611,10 @@ class Add(SkeelCommand):
         None,
         help="Optional skill or skill@version to add. Omit to select all skills.",
     )
+    name: str | None = arg(
+        None,
+        help="Install the selected skill under this local name.",
+    )
     apply: bool = arg(
         False,
         help="Apply the manifest after updating it.",
@@ -1599,6 +1634,10 @@ class Add(SkeelCommand):
         return examples(
             ("skeel add owner/repo skill-name", "Add one skill to the project manifest"),
             ("skeel add owner/repo skill-name@main", "Add a skill pinned to a git ref"),
+            (
+                "skeel add owner/repo skill-name --name local-name",
+                "Install a skill under a local name",
+            ),
             ("skeel add owner/repo", "Add all skills from a source"),
             ("skeel add owner/repo skill-name --apply", "Add and reconcile immediately"),
             ("skeel -g add owner/repo skill-name", "Add a skill to the user manifest"),

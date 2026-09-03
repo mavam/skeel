@@ -1,10 +1,11 @@
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
 import yaml
 
-from skeel.gh import InstalledSkill
+from skeel.gh import InstalledSkill, read_skill_provenance
 from skeel.io import Terminal
 from skeel.manifest import Manifest, SkillSpec, SourceSpec
 from skeel.reconcile import (
@@ -46,6 +47,73 @@ def test_apply_preserves_extras_by_default(tmp_path: Path) -> None:
 
     pruned = apply_plan(manifest, target, extras, prune=True)
     assert [step.kind for step in pruned] == ["command", "remove"]
+
+
+def test_apply_renames_matching_upstream_skill_in_place(tmp_path: Path, monkeypatch) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setattr("skeel.fast_install.Path.home", lambda: home)
+    target = SkillTarget(directory=tmp_path / "skills", scope="user")
+    upstream = target.directory / "agents"
+    upstream.mkdir(parents=True)
+    (upstream / "SKILL.md").write_text(
+        "---\n"
+        "name: agents\n"
+        "metadata:\n"
+        "  github-repo: https://github.com/elevenlabs/skills\n"
+        "  github-path: agents\n"
+        "---\n"
+        "# Agents\n"
+    )
+    lockfile = home / ".agents" / ".skill-lock.json"
+    lockfile.parent.mkdir(parents=True)
+    lockfile.write_text(
+        json.dumps(
+            {
+                "version": 3,
+                "skills": {
+                    "agents": {
+                        "source": "elevenlabs/skills",
+                        "skillPath": "agents/SKILL.md",
+                    }
+                },
+            }
+        )
+    )
+    manifest = manifest_with(
+        SourceSpec(
+            source="elevenlabs/skills",
+            skills=(SkillSpec(spec="agents", name="elevenlabs-agents"),),
+        )
+    )
+    current = (
+        InstalledSkill(
+            name="agents",
+            path=upstream,
+            source_url="https://github.com/elevenlabs/skills",
+            provenance=read_skill_provenance(upstream),
+        ),
+    )
+
+    diff = diff_installed_skills(manifest, current)
+    assert diff.missing == ()
+    assert diff.extra == ()
+    assert [(skill.name, skill.change) for skill in diff.changed] == [
+        ("elevenlabs-agents", "agents → elevenlabs-agents")
+    ]
+
+    plan = apply_plan(manifest, target, current)
+    assert len(plan) == 1
+    assert plan[0].kind == "rename"
+    assert plan[0].executor is not None
+    assert asyncio.run(plan[0].executor()).returncode == 0
+    renamed = target.directory / "elevenlabs-agents"
+    assert renamed.is_dir()
+    assert not upstream.exists()
+    frontmatter = yaml.safe_load((renamed / "SKILL.md").read_text().split("---", 2)[1])
+    assert frontmatter["name"] == "elevenlabs-agents"
+    skills = json.loads(lockfile.read_text())["skills"]
+    assert "agents" not in skills
+    assert skills["elevenlabs-agents"]["installPath"] == str(renamed.resolve())
 
 
 def test_apply_reconciles_frontmatter(tmp_path: Path) -> None:

@@ -16,6 +16,7 @@ from .fast_install import (
     fast_install_command,
     is_github_source,
     prunable_skill_directories,
+    rename_lockfile_skill,
     skill_command_label,
     supports_fast_install,
 )
@@ -35,6 +36,7 @@ from .io import (
     StepOutcome,
     StepPostprocessor,
     build_removal_guard,
+    move_guarded_directory,
 )
 from .manifest import DesiredSkill, Manifest, SkillSpec, SourceSpec
 from .targets import SkillTarget
@@ -76,7 +78,7 @@ class SkillStep:
     command: Command
     remove_path: Path | None = None
     removal_guard: RemovalGuard | None = None
-    kind: Literal["command", "remove", "frontmatter"] = "command"
+    kind: Literal["command", "remove", "frontmatter", "rename"] = "command"
     scope: str | None = None
     outcome: OutcomeFactory | None = None
     executor: StepExecutor | None = None
@@ -291,6 +293,13 @@ async def ensure_minimum_gh_version(runner: ProcessRunner) -> None:
         )
 
 
+def managed_skill_overrides(skill: SkillSpec) -> dict[str, object]:
+    overrides: dict[str, object] = dict(skill.frontmatter)
+    if skill.renamed:
+        overrides["name"] = skill.name
+    return overrides
+
+
 def frontmatter_steps(
     manifest: Manifest,
     target: SkillTarget,
@@ -322,14 +331,15 @@ def frontmatter_steps(
             )
             if current is None or not installed_source_matches(current, source):
                 continue
-            if not skill.frontmatter:
+            overrides = managed_skill_overrides(skill)
+            if not overrides:
                 continue
             frontmatter_path = current.path / "SKILL.md"
             if frontmatter_path in seen or not frontmatter_path.is_file():
                 continue
             if not frontmatter_needs_update(
                 frontmatter_path,
-                skill.frontmatter,
+                overrides,
                 root=target.directory,
             ):
                 continue
@@ -351,7 +361,7 @@ def frontmatter_step(
     path: Path,
     root: Path,
 ) -> SkillStep:
-    overrides = skill.frontmatter
+    overrides = managed_skill_overrides(skill)
 
     async def execute() -> ProcessResult:
         result = ProcessResult(command=[], returncode=0)
@@ -397,7 +407,7 @@ def install_frontmatter_postprocessor(
         return frontmatter_postprocessor(
             path,
             target.directory,
-            skill.frontmatter,
+            managed_skill_overrides(skill),
         )(result)
 
     return postprocess
@@ -455,6 +465,96 @@ def frontmatter_preview_detail(overrides: Mapping[str, object]) -> str:
     return ", ".join(overrides)
 
 
+def renamed_skill_detail(skill: SkillSpec | DesiredSkill) -> str | None:
+    return f"({skill.upstream_name})" if skill.renamed else None
+
+
+def install_detail_outcome(detail: str) -> OutcomeFactory:
+    def outcome(_result: ProcessResult) -> StepOutcome:
+        return StepOutcome(detail=detail)
+
+    return outcome
+
+
+def installed_skill_matches_spec(
+    installed: InstalledSkill,
+    source: SourceSpec,
+    skill: SkillSpec,
+) -> bool:
+    if not installed.usable or not installed_source_matches(installed, source):
+        return False
+    requested = skill_command_label(skill).removesuffix("/SKILL.md").rstrip("/")
+    upstream_path = installed.provenance.path.removesuffix("/SKILL.md").rstrip("/")
+    if not upstream_path:
+        return False
+    if "/" in requested:
+        return upstream_path == requested or upstream_path.endswith(f"/{requested}")
+    return Path(upstream_path).name == requested
+
+
+def matching_rename_source(
+    source: SourceSpec,
+    skill: SkillSpec,
+    installed: Sequence[InstalledSkill],
+) -> InstalledSkill | None:
+    if not skill.renamed:
+        return None
+    matches = tuple(
+        current
+        for current in installed
+        if current.path.name == skill.upstream_name
+        and installed_skill_matches_spec(current, source, skill)
+    )
+    return matches[0] if len(matches) == 1 else None
+
+
+def rename_step(
+    source: SourceSpec,
+    skill: SkillSpec,
+    installed: InstalledSkill,
+    target: SkillTarget,
+) -> SkillStep:
+    destination = target.directory / skill.name
+    guard = build_removal_guard(target.directory, installed.path)
+
+    async def execute() -> ProcessResult:
+        try:
+            move_guarded_directory(installed.path, destination, guard)
+            update_skill_frontmatter(
+                destination / "SKILL.md",
+                overrides={"name": skill.name, **skill.frontmatter},
+                root=target.directory,
+            )
+            rename_lockfile_skill(
+                old_name=installed.path.name,
+                new_name=skill.name,
+                source=source.source,
+                install_path=destination,
+            )
+        except (OSError, ValueError, FastInstallError) as error:
+            return ProcessResult(
+                command=["mv", str(installed.path), str(destination)],
+                returncode=1,
+                stderr=str(error),
+            )
+        return ProcessResult(
+            command=["mv", str(installed.path), str(destination)],
+            returncode=0,
+        )
+
+    return SkillStep(
+        label=source_skill_label(source.source, skill.name),
+        command=["mv", str(installed.path), str(destination)],
+        kind="rename",
+        outcome=lambda _result: StepOutcome(
+            status="updated",
+            detail=f"{installed.path.name} → {skill.name}",
+        ),
+        executor=execute,
+        parallel=False,
+    )
+
+
 def install_steps(
     source: SourceSpec,
     target: SkillTarget,
@@ -494,9 +594,12 @@ def install_steps(
             )
         postprocess = None
         preview_detail = None
-        if skill is not None and bool(skill.frontmatter):
+        if skill is not None and managed_skill_overrides(skill):
             postprocess = install_frontmatter_postprocessor(source.source, target, skill)
-            preview_detail = frontmatter_preview_detail(skill.frontmatter)
+            preview_detail = frontmatter_preview_detail(managed_skill_overrides(skill))
+        detail = renamed_skill_detail(skill) if skill is not None else None
+        if detail:
+            preview_detail = " ".join(part for part in (preview_detail, detail) if part)
         steps.append(
             SkillStep(
                 label=label,
@@ -504,6 +607,7 @@ def install_steps(
                 executor=executor,
                 postprocess=postprocess,
                 preview_detail=preview_detail,
+                outcome=install_detail_outcome(detail) if detail else None,
             )
         )
     return steps
@@ -669,7 +773,14 @@ def desired_label(skill: DesiredSkill) -> str:
 
 
 def desired_aliases(skill: DesiredSkill) -> set[str]:
-    return {skill.name, Path(skill.name).name, Path(skill.spec).name}
+    """Return names that identify the local installation."""
+    return {skill.name, Path(skill.name).name}
+
+
+def desired_selector_aliases(skill: DesiredSkill) -> set[str]:
+    """Return local and upstream names accepted by command selectors."""
+    spec = skill_command_label(SkillSpec(spec=skill.spec, name=skill.name))
+    return {*desired_aliases(skill), spec, Path(spec).name}
 
 
 def desired_install_specs(manifest: Manifest) -> dict[str, tuple[SourceSpec, SkillSpec]]:
@@ -761,12 +872,14 @@ def update_steps(
                         command=command,
                     ),
                 )
-                steps.append(with_update_frontmatter(step, skill, skill_spec, target))
+                step = with_update_frontmatter(step, skill, skill_spec, target)
+                steps.append(with_renamed_update_detail(step, skill_spec))
                 continue
             if needs_source_reinstall(skill, source):
                 repair = install_step_for_skill(source, skill_spec, target)
                 repair = replace(repair, label=label, outcome=update_outcome(skill))
-                steps.append(with_update_frontmatter(repair, skill, skill_spec, target))
+                repair = with_update_frontmatter(repair, skill, skill_spec, target)
+                steps.append(with_renamed_update_detail(repair, skill_spec))
                 continue
 
         step = SkillStep(
@@ -784,8 +897,23 @@ def update_steps(
         )
         if matched_spec is not None:
             step = with_update_frontmatter(step, skill, matched_spec, target)
+            step = with_renamed_update_detail(step, matched_spec)
         steps.append(step)
     return steps
+
+
+def with_renamed_update_detail(step: SkillStep, desired: SkillSpec) -> SkillStep:
+    suffix = renamed_skill_detail(desired)
+    if suffix is None:
+        return step
+    previous = step.outcome
+
+    def outcome(result: ProcessResult) -> StepOutcome:
+        current = previous(result) if previous is not None else StepOutcome()
+        detail = " ".join(part for part in (current.detail, suffix) if part)
+        return replace(current, detail=detail)
+
+    return replace(step, outcome=outcome)
 
 
 def with_update_frontmatter(
@@ -794,16 +922,17 @@ def with_update_frontmatter(
     desired: SkillSpec,
     target: SkillTarget,
 ) -> SkillStep:
-    if not desired.frontmatter:
+    overrides = managed_skill_overrides(desired)
+    if not overrides:
         return step
     return replace(
         step,
         postprocess=frontmatter_postprocessor(
             installed.path / "SKILL.md",
             target.directory,
-            desired.frontmatter,
+            overrides,
         ),
-        preview_detail=frontmatter_preview_detail(desired.frontmatter),
+        preview_detail=frontmatter_preview_detail(overrides),
     )
 
 

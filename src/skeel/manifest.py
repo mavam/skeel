@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +20,14 @@ class SkillSpec:
     pin: str | None = None
     frontmatter: dict[str, Any] = field(default_factory=dict, hash=False)
 
+    @property
+    def upstream_name(self) -> str:
+        return infer_skill_name(self.spec)
+
+    @property
+    def renamed(self) -> bool:
+        return self.name != self.upstream_name
+
 
 @dataclass(frozen=True)
 class SourceSpec:
@@ -34,6 +43,15 @@ class DesiredSkill:
     name: str
     spec: str
     source: str
+    change: str | None = None
+
+    @property
+    def upstream_name(self) -> str:
+        return infer_skill_name(self.spec)
+
+    @property
+    def renamed(self) -> bool:
+        return self.name != self.upstream_name
 
 
 @dataclass(frozen=True)
@@ -96,6 +114,17 @@ def parse_command(value: Any) -> tuple[str, ...]:
     raise ValueError(f"invalid command entry: {value!r}")
 
 
+SKILL_NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
+def validate_skill_name(name: str) -> None:
+    if len(name) > 64 or not SKILL_NAME_PATTERN.fullmatch(name):
+        raise ValueError(
+            f'invalid local skill name "{name}"; use 1-64 lowercase letters, numbers, or '
+            "single hyphens"
+        )
+
+
 def parse_skill(value: Any, *, source_pin: str | None = None) -> SkillSpec:
     if isinstance(value, str):
         return SkillSpec(spec=value, name=infer_skill_name(value), pin=source_pin)
@@ -106,6 +135,7 @@ def parse_skill(value: Any, *, source_pin: str | None = None) -> SkillSpec:
     if not spec:
         raise ValueError(f"skill entry missing name/spec/path: {value!r}")
     name = str(value.get("name") or infer_skill_name(spec))
+    validate_skill_name(name)
     pin = value.get("pin", source_pin)
     raw_frontmatter = value.get("frontmatter", {})
     if not isinstance(raw_frontmatter, dict) or not all(
@@ -148,6 +178,8 @@ def parse_source(source: Any, value: Any) -> SourceSpec:
         raise ValueError("manifest backends are not supported; skeel always uses gh skill")
     if "frontmatter" in value:
         raise ValueError("frontmatter belongs on an individual skill, not a source")
+    if any(key in value for key in ("name", "spec", "path")):
+        raise ValueError("renamed skills require an explicit entry under source skills")
 
     install = tuple(parse_command(command) for command in value.get("install") or [])
     source_pin = value.get("pin")
@@ -159,6 +191,11 @@ def parse_source(source: Any, value: Any) -> SourceSpec:
     install_all = bool(not skills and not install)
     if not skills and not install_all:
         raise ValueError(f"source {source} has no skills")
+    if install and any(skill.renamed for skill in skills):
+        raise ValueError(
+            f"source {source} uses custom install commands; renamed skills require the built-in "
+            "GitHub installer"
+        )
     return SourceSpec(
         source=source,
         skills=skills,
@@ -205,6 +242,12 @@ def parse_manifest_data(data: dict[str, Any], path: Path) -> Manifest:
     if not isinstance(sources_value, dict):
         raise ValueError("manifest sources must be a mapping")
     sources = tuple(parse_source(source, value) for source, value in sources_value.items())
+    names: set[str] = set()
+    for source in sources:
+        for skill in source.skills:
+            if skill.name in names:
+                raise ValueError(f'duplicate local skill name in manifest: "{skill.name}"')
+            names.add(skill.name)
 
     return Manifest(
         path=path,
@@ -226,10 +269,11 @@ def upsert_manifest_source(
     source: str,
     skill: str | None = None,
     *,
+    name: str | None = None,
     dry_run: bool = False,
 ) -> ManifestUpdate:
     data = load_manifest_data(path)
-    changed = upsert_source(data, source, skill)
+    changed = upsert_source(data, source, skill, name=name)
     manifest = parse_manifest_data(data, path)
     if changed and not dry_run:
         save_manifest_data(path, data)
@@ -251,21 +295,31 @@ def remove_manifest_source(
     return ManifestUpdate(manifest=manifest, changed=changed)
 
 
-def upsert_source(data: dict[str, Any], source: str, skill: str | None = None) -> bool:
+def upsert_source(
+    data: dict[str, Any],
+    source: str,
+    skill: str | None = None,
+    *,
+    name: str | None = None,
+) -> bool:
     if not source.strip():
         raise ValueError("source is required")
     if skill is not None and not skill.strip():
         raise ValueError("skill is required")
+    if name is not None:
+        if skill is None:
+            raise ValueError("--name requires an explicit skill")
+        validate_skill_name(name)
 
     sources = manifest_sources(data)
     if source not in sources:
-        sources[source] = [skill] if skill else None
+        sources[source] = [manifest_skill_value(skill, name)] if skill else None
         return True
 
     if skill is None:
         return select_all_skills(sources, source)
 
-    return upsert_source_skill(sources, source, skill)
+    return upsert_source_skill(sources, source, skill, name=name)
 
 
 def remove_source(data: dict[str, Any], source: str, skill: str | None = None) -> bool:
@@ -311,14 +365,26 @@ def select_all_skills(sources: dict[Any, Any], source: str) -> bool:
     return True
 
 
-def upsert_source_skill(sources: dict[Any, Any], source: str, skill: str) -> bool:
+def manifest_skill_value(skill: str, name: str | None) -> str | dict[str, str]:
+    if name is None or name == infer_skill_name(skill):
+        return skill
+    return {"name": name, "spec": skill}
+
+
+def upsert_source_skill(
+    sources: dict[Any, Any],
+    source: str,
+    skill: str,
+    *,
+    name: str | None = None,
+) -> bool:
     current = sources[source]
     if current is None:
-        sources[source] = [skill]
+        sources[source] = [manifest_skill_value(skill, name)]
         return True
     if isinstance(current, list):
         skills = list(current)
-        changed = upsert_skill(skills, skill)
+        changed = upsert_skill(skills, skill, name=name)
         if changed:
             sources[source] = skills
         return changed
@@ -327,7 +393,7 @@ def upsert_source_skill(sources: dict[Any, Any], source: str, skill: str) -> boo
         if not isinstance(skills_value, list):
             raise ValueError(f"source {source} skills must be a list")
         skills = list(skills_value)
-        changed = upsert_skill(skills, skill)
+        changed = upsert_skill(skills, skill, name=name)
         if changed or "skills" not in current:
             next_value = dict(current)
             next_value["skills"] = skills
@@ -371,8 +437,8 @@ def remove_source_skill(sources: dict[Any, Any], source: str, skill: str) -> boo
     raise ValueError(f"source {source} must be empty, a skill list, or an options mapping")
 
 
-def upsert_skill(skills: list[Any], skill: str) -> bool:
-    desired = parse_skill(skill)
+def upsert_skill(skills: list[Any], skill: str, *, name: str | None = None) -> bool:
+    desired = parse_skill({"spec": skill, "name": name} if name is not None else skill)
     for index, current in enumerate(skills):
         parsed = parse_skill(current)
         if parsed.name == desired.name:
@@ -388,9 +454,9 @@ def upsert_skill(skills: list[Any], skill: str) -> bool:
                     updated["spec"] = skill
                 skills[index] = updated
             else:
-                skills[index] = skill
+                skills[index] = manifest_skill_value(skill, name)
             return True
-    skills.append(skill)
+    skills.append(manifest_skill_value(skill, name))
     return True
 
 

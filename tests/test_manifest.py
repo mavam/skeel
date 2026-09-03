@@ -79,6 +79,82 @@ sources:
     )
 
 
+def test_load_manifest_renamed_skill(tmp_path: Path) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  elevenlabs/skills:
+    pin: main
+    skills:
+      - name: elevenlabs-agents
+        spec: agents
+""",
+    )
+
+    skill = load_manifest(path).sources[0].skills[0]
+
+    assert skill.name == "elevenlabs-agents"
+    assert skill.spec == "agents"
+    assert skill.upstream_name == "agents"
+    assert skill.renamed
+
+
+def test_load_manifest_allows_same_upstream_skill_under_different_names(tmp_path: Path) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  example/skills:
+    skills:
+      - name: first
+        spec: shared
+      - name: second
+        spec: shared
+""",
+    )
+
+    skills = load_manifest(path).sources[0].skills
+    assert [(skill.name, skill.spec) for skill in skills] == [
+        ("first", "shared"),
+        ("second", "shared"),
+    ]
+
+
+def test_load_manifest_rejects_duplicate_local_names(tmp_path: Path) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  one/skills:
+    - shared
+  two/skills:
+    - shared
+""",
+    )
+
+    with pytest.raises(ValueError, match="duplicate local skill name"):
+        load_manifest(path)
+
+
+def test_load_manifest_rejects_renames_with_custom_install(tmp_path: Path) -> None:
+    path = write_manifest(
+        tmp_path,
+        """
+sources:
+  custom/installer:
+    skills:
+      - name: local-name
+        spec: upstream-name
+    install:
+      - install-custom
+""",
+    )
+
+    with pytest.raises(ValueError, match="renamed skills require the built-in GitHub installer"):
+        load_manifest(path)
+
+
 def test_load_manifest_frontmatter_overrides(tmp_path: Path) -> None:
     path = write_manifest(
         tmp_path,
@@ -208,6 +284,22 @@ def test_upsert_manifest_source_writes_keyed_schema(tmp_path: Path) -> None:
 
     assert path.read_text() == (
         "sources:\n  tenzir/skills:\n    - tenzir-docs@main\n  mavam/quarto-brief:\n"
+    )
+
+
+def test_upsert_manifest_source_writes_local_name(tmp_path: Path) -> None:
+    path = tmp_path / ".agents" / "skills.yaml"
+
+    result = upsert_manifest_source(
+        path,
+        "elevenlabs/skills",
+        "agents",
+        name="elevenlabs-agents",
+    )
+
+    assert result.changed
+    assert path.read_text() == (
+        "sources:\n  elevenlabs/skills:\n    - name: elevenlabs-agents\n      spec: agents\n"
     )
 
 
