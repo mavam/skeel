@@ -100,8 +100,10 @@ def test_install_steps_apply_frontmatter_after_install(tmp_path: Path) -> None:
     step = install_steps(source, target)[0]
 
     assert step.label == "example/skills@deploy-alias"
+    assert step.command == ["gh", "api", "repos/example/skills/tarball/HEAD"]
+    assert step.executor is not None
     assert step.postprocess is not None
-    assert step.preview_detail == "disable-model-invocation"
+    assert step.preview_detail == "disable-model-invocation, name (deploy)"
     result = step.postprocess(ProcessResult(command=step.command, returncode=0))
     assert result.returncode == 0
     frontmatter = (skill_path / "SKILL.md").read_text().split("---", 2)[1]

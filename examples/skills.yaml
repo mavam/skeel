@@ -5,6 +5,11 @@ sources:
     - tenzir-ecs
   openclaw/gogcli:
     - gog
+  elevenlabs/skills:
+    pin: main
+    skills:
+      - name: elevenlabs-agents
+        spec: agents
   slack-clacks/clacks:
     skills:
       - name: clacks

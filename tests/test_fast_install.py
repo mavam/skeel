@@ -77,6 +77,36 @@ description: ASIM reference
     )
 
 
+def test_install_skill_uses_local_name_for_directory_frontmatter_and_lockfile(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "home"
+    source = tmp_path / "source" / "agents"
+    source.mkdir(parents=True)
+    (source / "SKILL.md").write_text("---\nname: agents\n---\n# Agents\n")
+    monkeypatch.setattr("skeel.fast_install.Path.home", lambda: home)
+
+    install_skill(
+        source="elevenlabs/skills",
+        pin="main",
+        ref="refs/heads/main",
+        tree_sha="tree123",
+        skill=DiscoveredSkill(name="agents", path="agents", directory=source),
+        directory=tmp_path / "target",
+        local_name="elevenlabs-agents",
+    )
+
+    installed = tmp_path / "target" / "elevenlabs-agents"
+    assert not (tmp_path / "target" / "agents").exists()
+    frontmatter = yaml.safe_load((installed / "SKILL.md").read_text().split("---", 2)[1])
+    assert frontmatter["name"] == "elevenlabs-agents"
+    assert frontmatter["metadata"]["github-path"] == "agents"
+    lockfile = json.loads((home / ".agents" / ".skill-lock.json").read_text())
+    assert "agents" not in lockfile["skills"]
+    assert lockfile["skills"]["elevenlabs-agents"]["skillPath"] == "agents/SKILL.md"
+
+
 def test_install_skill_replaces_symlink_without_removing_its_destination(
     tmp_path: Path,
     monkeypatch,

@@ -401,7 +401,7 @@ class Terminal:
         self,
         missing: Sequence[tuple[str, str | None, str | None]],
         extra: Sequence[tuple[str, str | None, str | None]],
-        changed: Sequence[tuple[str, str | None, str | None]],
+        changed: Sequence[tuple[str, str | None, str | None, str]],
         *,
         manifest_path: Path,
         warning: bool = False,
@@ -416,11 +416,11 @@ class Terminal:
             self.status_line(MARKER_INSTALL, f"{source or 'manual'}@{name}", scope=scope)
         for name, source, scope in extra:
             self.status_line(MARKER_REMOVE, f"{source or 'installed'}@{name}", scope=scope)
-        for name, source, scope in changed:
+        for name, source, scope, detail in changed:
             self.status_line(
                 MARKER_UPDATED,
                 f"{source or 'manual'}@{name}",
-                detail="frontmatter",
+                detail=detail,
                 scope=scope,
             )
 
@@ -615,6 +615,47 @@ def build_removal_guard(root: Path, path: Path) -> RemovalGuard:
     )
 
 
+def move_guarded_directory(path: Path, destination: Path, guard: RemovalGuard) -> None:
+    """Move a validated skill within its unchanged target directory."""
+    relative = guard.relative_path
+    if relative.is_absolute() or relative == Path(".") or ".." in relative.parts:
+        raise ValueError(f"refusing to move invalid relative skill path: {path}")
+    if destination.parent.resolve() != guard.root:
+        raise ValueError(f"refusing to move skill outside target directory: {destination}")
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        raise OSError("safe target directory opening is unavailable on this platform")
+
+    root_lstat = os.lstat(guard.root)
+    if stat.S_ISLNK(root_lstat.st_mode):
+        raise ValueError(f"refusing to move through symlinked target: {guard.root}")
+
+    root_fd = os.open(guard.root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        root_stat = os.fstat(root_fd)
+        if (root_stat.st_dev, root_stat.st_ino) != (guard.root_device, guard.root_inode):
+            raise ValueError(f"refusing to move through replaced target: {guard.root}")
+        skill_stat = os.stat(relative, dir_fd=root_fd, follow_symlinks=False)
+        if (skill_stat.st_dev, skill_stat.st_ino) != (
+            guard.skill_device,
+            guard.skill_inode,
+        ):
+            raise ValueError(f"refusing to move replaced skill: {path}")
+        if not stat.S_ISDIR(skill_stat.st_mode) or guard.skill_symlink_target is not None:
+            raise ValueError(f"refusing to move non-directory skill: {path}")
+        metadata_stat = os.stat(relative / "SKILL.md", dir_fd=root_fd, follow_symlinks=False)
+        if not stat.S_ISREG(metadata_stat.st_mode):
+            raise ValueError(f"refusing to move directory without regular SKILL.md: {path}")
+        try:
+            os.stat(destination.name, dir_fd=root_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise ValueError(f"refusing to replace existing skill: {destination}")
+        os.rename(relative, destination.name, src_dir_fd=root_fd, dst_dir_fd=root_fd)
+    finally:
+        os.close(root_fd)
+
+
 def remove_guarded_directory(path: Path, guard: RemovalGuard) -> None:
     """Remove a validated skill relative to its unchanged target directory."""
     relative = guard.relative_path
@@ -732,7 +773,7 @@ def dry_run_step_result(
         )
     result = runtime.terminal.dry_run_step(step.label, step.command, action=dry_run_action)
     if step.preview_detail:
-        runtime.terminal.line(f"  frontmatter: {step.preview_detail}")
+        runtime.terminal.line(f"  {step.preview_detail}")
     return result
 
 

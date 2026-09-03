@@ -10,10 +10,14 @@ from .gh import (
     SkillStep,
     desired_aliases,
     desired_label,
+    desired_selector_aliases,
     frontmatter_steps,
     install_steps,
     installed_source_matches,
+    managed_skill_overrides,
     manual_install_steps,
+    matching_rename_source,
+    rename_step,
     source_skill_label,
 )
 from .io import build_removal_guard
@@ -275,7 +279,7 @@ def unique_shadow_warnings(
 
 
 def desired_skill_shadow_aliases(skill: DesiredSkill) -> tuple[str, ...]:
-    return shadow_aliases(skill.name, Path(skill.name).name, Path(skill.spec).name)
+    return shadow_aliases(skill.name, Path(skill.name).name)
 
 
 def installed_skill_shadow_aliases(skill: InstalledSkill) -> tuple[str, ...]:
@@ -348,6 +352,7 @@ class ListedSkill:
     source: str
     label: str
     status: str
+    spec: str | None = None
     path: Path | None = None
     version: str | None = None
     dynamic: bool = False
@@ -363,6 +368,8 @@ class ListedSkill:
             "label": self.label,
             "status": self.status,
         }
+        if self.spec is not None:
+            payload["spec"] = self.spec
         if self.manifest_path is not None:
             payload["manifest"] = str(self.manifest_path)
         if self.path is not None:
@@ -383,20 +390,9 @@ def diff_installed_skills(
     desired = {skill.name: skill for skill in manifest.desired_skills}
     installed_index = installed_skill_index(installed)
     dynamic_sources = tuple(source for source in manifest.sources if source.install_all)
-    extra = tuple(
-        skill
-        for skill in installed
-        if not skill.usable
-        or (
-            skill.name not in desired
-            and skill.basename not in desired
-            and not any(
-                installed_skill_matches_dynamic_source(skill, source) for source in dynamic_sources
-            )
-        )
-    )
     missing: list[DesiredSkill] = []
     changed: list[DesiredSkill] = []
+    renamed_paths: set[Path] = set()
     for source in manifest.sources:
         if source.install_all:
             if not dynamic_source_satisfied(source, installed):
@@ -406,19 +402,55 @@ def diff_installed_skills(
             desired_skill = DesiredSkill(name=skill.name, spec=skill.spec, source=source.source)
             match = matching_installed_skill(desired_skill, installed_index)
             if match is None or not installed_source_matches(match, source):
-                missing.append(desired_skill)
+                rename_source = matching_rename_source(source, skill, installed)
+                if rename_source is not None:
+                    renamed_paths.add(rename_source.path)
+                    changed.append(
+                        DesiredSkill(
+                            name=skill.name,
+                            spec=skill.spec,
+                            source=source.source,
+                            change=f"{rename_source.path.name} → {skill.name}",
+                        )
+                    )
+                else:
+                    missing.append(desired_skill)
                 continue
             frontmatter_path = match.path / "SKILL.md"
+            overrides = managed_skill_overrides(skill)
             if (
-                bool(skill.frontmatter)
+                bool(overrides)
                 and frontmatter_path.is_file()
                 and frontmatter_needs_update(
                     frontmatter_path,
-                    skill.frontmatter,
+                    overrides,
                     root=match.path.parent,
                 )
             ):
-                changed.append(desired_skill)
+                changed.append(
+                    DesiredSkill(
+                        name=skill.name,
+                        spec=skill.spec,
+                        source=source.source,
+                        change="frontmatter",
+                    )
+                )
+    extra = tuple(
+        skill
+        for skill in installed
+        if skill.path not in renamed_paths
+        and (
+            not skill.usable
+            or (
+                skill.name not in desired
+                and skill.basename not in desired
+                and not any(
+                    installed_skill_matches_dynamic_source(skill, source)
+                    for source in dynamic_sources
+                )
+            )
+        )
+    )
     return SkillDiff(
         missing=tuple(missing),
         extra=tuple(sorted(extra, key=lambda skill: skill.name)),
@@ -485,6 +517,7 @@ def list_manifest_skills(
                     source=desired.source,
                     label=desired_label(desired),
                     status="installed" if match else "missing",
+                    spec=desired.spec,
                     path=match.path if match else None,
                     version=match.version_label if match else None,
                 )
@@ -579,6 +612,12 @@ def apply_plan(
             installed=installed,
         )
     )
+    renames = [
+        rename_step(source, skill, rename_source, target)
+        for source in selected_manifest.sources
+        for skill in source.skills
+        if (rename_source := matching_rename_source(source, skill, installed)) is not None
+    ]
     repairs = tuple(
         skill
         for skill in diff.extra
@@ -588,7 +627,7 @@ def apply_plan(
     repair_steps = remove_steps(repairs, target)
     overrides = frontmatter_steps(selected_manifest, target, installed)
     if selector is not None:
-        return [*repair_steps, *install, *overrides]
+        return [*repair_steps, *renames, *install, *overrides]
 
     # Extras are preserved by default; ``prune`` removes them all, while
     # explicit ``removals`` (from `skeel remove --apply`) delete exactly the
@@ -605,8 +644,8 @@ def apply_plan(
     cleanup = tuple(skill for skill in removable if skill.path not in repair_paths)
     cleanup_steps = remove_steps(cleanup, target)
     if has_missing_dynamic_source(selected_manifest, diff):
-        return [*repair_steps, *cleanup_steps, *install, *overrides]
-    return [*repair_steps, *install, *overrides, *cleanup_steps]
+        return [*repair_steps, *cleanup_steps, *renames, *install, *overrides]
+    return [*repair_steps, *renames, *install, *overrides, *cleanup_steps]
 
 
 def skill_declared_by_manifest(skill: InstalledSkill, manifest: Manifest) -> bool:
@@ -702,7 +741,12 @@ def filter_source(source: SourceSpec, skill: str | None) -> SourceSpec | None:
 
 
 def skill_matches_selector(skill: SkillSpec, selected: SkillSpec) -> bool:
-    return skill.name == selected.name or skill.spec == selected.spec
+    desired = DesiredSkill(name=skill.name, spec=skill.spec, source="")
+    selected_spec = selected.spec.split("@", 1)[0].removesuffix("/SKILL.md").rstrip("/")
+    return selected.name in desired_selector_aliases(desired) or selected_spec in (
+        skill.spec,
+        skill.spec.split("@", 1)[0].removesuffix("/SKILL.md").rstrip("/"),
+    )
 
 
 MissingKey = tuple[str, str]

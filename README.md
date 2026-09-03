@@ -43,6 +43,11 @@ sources:
         frontmatter:
           disable-model-invocation: true
           compatibility: Requires Git
+  elevenlabs/skills:
+    pin: main
+    skills:
+      - name: elevenlabs-agents
+        spec: agents
 ```
 
 An empty value installs all skills from a source. A list is the common form for
@@ -53,11 +58,16 @@ updates, and reports drift through `diff`.
 
 Frontmatter overrides are shallow: scalar and list values replace upstream values,
 while `metadata` entries merge with the upstream map. The skill `name` and skeel's
-`github-*` provenance metadata cannot be overridden. Removing a field stops skeel from
-managing it; use `apply --reinstall` to restore upstream content immediately. Applying
-overrides normalizes the YAML frontmatter and may discard comments or scalar formatting.
-Overrides cannot target symlinked files or skill directories that resolve outside the
-managed skills directory.
+`github-*` provenance metadata cannot be overridden. To install a skill under another
+name, use an explicit entry with `spec` as the upstream selector and `name` as the local
+install name. Skeel renames the directory and frontmatter together while preserving the
+upstream path in its provenance. Renamed skills require the built-in GitHub installer
+and cannot use custom `install` commands.
+
+Removing a frontmatter field stops skeel from managing it; use `apply --reinstall` to
+restore upstream content immediately. Applying overrides normalizes the YAML frontmatter
+and may discard comments or scalar formatting. Overrides cannot target symlinked files
+or skill directories that resolve outside the managed skills directory.
 
 During `update`, selected skills refresh independently, while an install-all source
 refreshes once and discovers newly added upstream skills. Frontmatter overrides require
@@ -268,7 +278,16 @@ without pruning it.
 ### `add`
 
 Upsert a source or source/skill entry into the manifest. Omit the skill to
-select all skills from the source. Pass `--apply` to reconcile immediately.
+select all skills from the source. Pass `--apply` to reconcile immediately. Use
+`--name` to install an explicitly selected skill under a different local name:
+
+```sh
+uvx skeel -g add elevenlabs/skills agents --name elevenlabs-agents
+```
+
+This writes `spec: agents` as the upstream selector and `name: elevenlabs-agents`
+as the installed directory and frontmatter name. Updates continue to use the
+upstream selector.
 
 ```sh
 uvx skeel add tenzir/skills tenzir-docs@main
@@ -306,10 +325,11 @@ uvx skeel remove tenzir-docs
 ✔︎ ★ tenzir-docs tenzir/skills .agents/skills.yaml
 ```
 
-When multiple sources declare the same skill name, disambiguate with `--source`:
+Local skill names must be unique within a manifest. Use the local name when
+removing a renamed skill:
 
 ```sh
-uvx skeel remove tenzir-docs --source tenzir/skills
+uvx skeel remove elevenlabs-agents
 ```
 
 Omit the skill to remove the whole source selected by `--source`. For custom
