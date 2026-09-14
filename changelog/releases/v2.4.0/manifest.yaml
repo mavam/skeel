@@ -1,0 +1,9 @@
+created: 2026-09-14
+title: Default agent targets
+intro: >-
+  Configure default agents in your manifest to apply and update skills across multiple
+  agent directories with one command. Explicit target overrides and shared-directory
+  deduplication keep reconciliation predictable.
+source:
+  mode: sync-stable-queue
+  previous_stable: v2.3.0
