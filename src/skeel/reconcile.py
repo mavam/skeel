@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .frontmatter import frontmatter_needs_update
@@ -177,7 +177,7 @@ def filter_shadowed_manifest(
             )
 
     return (
-        Manifest(path=manifest.path, sources=tuple(sources)),
+        replace(manifest, sources=tuple(sources)),
         unique_shadow_warnings(warnings),
     )
 
@@ -223,7 +223,7 @@ def filter_shadowed_dynamic_sources(
         ) and not matching_dynamic_source_skills(source, filtered_installed):
             continue
         sources.append(source)
-    return Manifest(path=manifest.path, sources=tuple(sources))
+    return replace(manifest, sources=tuple(sources))
 
 
 def shadow_warning_for_desired_skill(
@@ -705,7 +705,7 @@ def filter_manifest(
             continue
         if filtered_source := filter_source(source, selector.skill):
             sources.append(filtered_source)
-    return Manifest(path=manifest.path, sources=tuple(sources))
+    return replace(manifest, sources=tuple(sources))
 
 
 def selector_label(selector: ApplySelector) -> str:

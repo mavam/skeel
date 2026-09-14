@@ -102,7 +102,31 @@ a manifest from another path. Because an explicit manifest path is not scoped,
 
 ## 🎯 Agent Targets
 
-By default, skeel manages the universal `.agents/skills` directory. Use
+By default, skeel manages the universal `.agents/skills` directory. Set `agents`
+in the manifest to manage several targets with one command:
+
+```yaml
+agents:
+  - universal
+  - claude-code
+
+sources:
+  anthropics/skills:
+    - skill-creator
+```
+
+With this user manifest, `skeel -g apply` and `skeel -g update` manage both
+`~/.agents/skills` and `~/.claude/skills`. `list`, `diff`, and `add`/`remove`
+with `--apply` use the same defaults. `agents` must be a non-empty list of
+supported agent IDs; omit it to keep the universal default. Targets resolving
+to the same directory, including through symlinks, are processed only once.
+
+Each scope uses its own manifest's defaults. Manifest discovery stays unchanged:
+project scope reads `.agents/skills.yaml` in the current directory unless an
+explicit agent selects a different base. The manifest's defaults select target
+directories, not another manifest.
+
+An explicit `--agent` or `--dir` overrides the entire default list. Use
 `--agent` to manage a specific agent's skill directory instead, or `--dir` for
 an explicit directory:
 
@@ -124,7 +148,7 @@ For an agent-specific target, project scope anchors at the enclosing git
 repository root so skills land where the agent discovers them, falling back to
 the working directory outside a repository. The `universal` target retains the
 default current-directory anchoring and project-over-user shadowing behavior.
-Manifests stay agent-neutral: the same `.agents/skills.yaml` drives every target.
+The same `.agents/skills.yaml` supplies skill selections for every target.
 Agent-specific targets reconcile project and user scope independently. Valid
 skill directory symlinks count as installed, so links to universal skills remain
 idempotent. When the same skill appears in both scopes, skeel warns and lets the
