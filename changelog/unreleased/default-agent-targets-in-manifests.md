@@ -3,7 +3,9 @@ title: Default agent targets in manifests
 type: feature
 authors:
   - mavam
-created: 2026-09-14T12:01:43.604922Z
+prs:
+  - 27
+created: 2026-09-14T13:02:55.755442Z
 ---
 
 You can now select default agent targets in a manifest and manage them together:
