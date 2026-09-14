@@ -3,7 +3,9 @@ title: Nix and Home Manager support
 type: feature
 authors:
   - mavam
-created: 2026-09-14T07:59:02.135786Z
+prs:
+  - 26
+created: 2026-09-14T08:09:44.381281Z
 ---
 
 You can now install Skeel with Nix and manage agent skills natively through Home Manager. The module builds skills from sources pinned by your own flake, supports discovery, selection, renaming, and frontmatter overrides, and leaves unrelated local skills untouched.
