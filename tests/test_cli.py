@@ -731,7 +731,7 @@ def test_add_writes_manifest_in_keyed_shape(tmp_path, capsys, monkeypatch) -> No
     assert manifest.sources[0].skills[0].spec == "tenzir-docs@main"
     assert manifest.sources[1].install_all is True
     assert (tmp_path / ".agents" / "skills.yaml").read_text() == (
-        "sources:\n  tenzir/skills:\n    - tenzir-docs@main\n  mavam/quarto-brief:\n"
+        "sources:\n  tenzir/skills:\n    - tenzir-docs@main\n  mavam/quarto-brief: all\n"
     )
 
 

@@ -283,7 +283,7 @@ def test_upsert_manifest_source_writes_keyed_schema(tmp_path: Path) -> None:
     assert result.changed is True
 
     assert path.read_text() == (
-        "sources:\n  tenzir/skills:\n    - tenzir-docs@main\n  mavam/quarto-brief:\n"
+        "sources:\n  tenzir/skills:\n    - tenzir-docs@main\n  mavam/quarto-brief: all\n"
     )
 
 
@@ -355,3 +355,56 @@ sources:
     result = remove_manifest_source(path, "mavam/quarto-brief")
     assert result.changed is True
     assert path.read_text() == "sources:\n  tenzir/skills:\n    - tenzir-ecs\n"
+
+
+@pytest.mark.parametrize(
+    "value", ["all", "{skills: all}", "{pin: main, skills: all}", "", "{}", "{pin: main}"]
+)
+def test_all_selectors(tmp_path: Path, value: str) -> None:
+    path = write_manifest(tmp_path, f"sources:\n  example/skills: {value}\n")
+    source = load_manifest(path).sources[0]
+    assert source.install_all
+    assert source.skills == ()
+    assert source.pin == ("main" if "main" in value else None)
+    with pytest.raises(ValueError, match="selects all skills"):
+        remove_manifest_source(path, "example/skills", "deploy")
+    result = upsert_manifest_source(path, "example/skills", "deploy")
+    assert result.manifest.desired_skill_names == {"deploy"}
+    assert result.manifest.sources[0].pin == source.pin
+    result = upsert_manifest_source(path, "example/skills")
+    assert result.manifest.sources[0].install_all
+    assert "all" in path.read_text()
+    assert not upsert_manifest_source(path, "example/skills").changed
+    assert remove_manifest_source(path, "example/skills").changed
+
+
+@pytest.mark.parametrize("value", ["[all]", "{skills: [all]}"])
+def test_literal_all_skill(tmp_path: Path, value: str) -> None:
+    path = write_manifest(tmp_path, f"sources:\n  example/skills: {value}\n")
+    source = load_manifest(path).sources[0]
+    assert not source.install_all
+    assert source.skills[0].name == "all"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "everything",
+        "true",
+        "42",
+        "{skills: everything}",
+        "{skills: true}",
+        "{skills: {all: true}}",
+        "{skills: all, install: [custom-install]}",
+    ],
+)
+def test_invalid_all_selectors(tmp_path: Path, value: str) -> None:
+    path = write_manifest(tmp_path, f"sources:\n  example/skills: {value}\n")
+    with pytest.raises(ValueError):
+        load_manifest(path)
+
+
+def test_select_all_canonicalizes_legacy_source(tmp_path: Path) -> None:
+    path = write_manifest(tmp_path, "sources:\n  example/skills:\n")
+    assert upsert_manifest_source(path, "example/skills").changed
+    assert path.read_text() == "sources:\n  example/skills: all\n"

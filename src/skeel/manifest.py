@@ -165,7 +165,7 @@ def parse_source(source: Any, value: Any) -> SourceSpec:
     if not isinstance(source, str) or not source:
         raise ValueError("manifest source keys must be non-empty strings")
 
-    if value is None:
+    if value is None or value == "all":
         return SourceSpec(source=source, skills=(), install_all=True)
     if isinstance(value, list):
         skills = tuple(parse_skill(skill) for skill in value)
@@ -173,7 +173,9 @@ def parse_source(source: Any, value: Any) -> SourceSpec:
             raise ValueError(f"source {source} has no skills")
         return SourceSpec(source=source, skills=skills)
     if not isinstance(value, dict):
-        raise ValueError(f"source {source} must be empty, a skill list, or an options mapping")
+        raise ValueError(
+            f"source {source} must be 'all', empty, a skill list, or an options mapping"
+        )
 
     if "source" in value or "github" in value:
         raise ValueError("source entries use mapping keys, not source/github fields")
@@ -188,8 +190,12 @@ def parse_source(source: Any, value: Any) -> SourceSpec:
     source_pin = value.get("pin")
     pin = str(source_pin) if source_pin else None
     skills_value = value.get("skills") or []
+    if skills_value == "all":
+        if install:
+            raise ValueError(f"source {source} uses custom install commands; add skills explicitly")
+        skills_value = []
     if not isinstance(skills_value, list):
-        raise ValueError(f"source {source} skills must be a list")
+        raise ValueError(f"source {source} skills must be 'all' or a list")
     skills = tuple(parse_skill(skill, source_pin=pin) for skill in skills_value)
     install_all = bool(not skills and not install)
     if not skills and not install_all:
@@ -330,7 +336,7 @@ def upsert_source(
 
     sources = manifest_sources(data)
     if source not in sources:
-        sources[source] = [manifest_skill_value(skill, name)] if skill else None
+        sources[source] = [manifest_skill_value(skill, name)] if skill else "all"
         return True
 
     if skill is None:
@@ -363,19 +369,20 @@ def manifest_sources(data: dict[str, Any]) -> dict[Any, Any]:
 
 def select_all_skills(sources: dict[Any, Any], source: str) -> bool:
     current = sources[source]
-    if current is None:
+    if current == "all":
         return False
-    next_value: dict[Any, Any] | None
+    next_value: dict[Any, Any] | str
     if isinstance(current, dict):
         if current.get("install"):
             raise ValueError(f"source {source} uses custom install commands; add skills explicitly")
         next_value = dict(current)
-        next_value.pop("skills", None)
-        next_value = next_value or None
-    elif isinstance(current, list):
-        next_value = None
+        next_value["skills"] = "all"
+    elif current is None or isinstance(current, list):
+        next_value = "all"
     else:
-        raise ValueError(f"source {source} must be empty, a skill list, or an options mapping")
+        raise ValueError(
+            f"source {source} must be 'all', empty, a skill list, or an options mapping"
+        )
     if next_value == current:
         return False
     sources[source] = next_value
@@ -396,7 +403,7 @@ def upsert_source_skill(
     name: str | None = None,
 ) -> bool:
     current = sources[source]
-    if current is None:
+    if current is None or current == "all":
         sources[source] = [manifest_skill_value(skill, name)]
         return True
     if isinstance(current, list):
@@ -407,8 +414,10 @@ def upsert_source_skill(
         return changed
     if isinstance(current, dict):
         skills_value = current.get("skills") or []
+        if skills_value == "all":
+            skills_value = []
         if not isinstance(skills_value, list):
-            raise ValueError(f"source {source} skills must be a list")
+            raise ValueError(f"source {source} skills must be 'all' or a list")
         skills = list(skills_value)
         changed = upsert_skill(skills, skill, name=name)
         if changed or "skills" not in current:
@@ -417,12 +426,12 @@ def upsert_source_skill(
             sources[source] = next_value
             return True
         return False
-    raise ValueError(f"source {source} must be empty, a skill list, or an options mapping")
+    raise ValueError(f"source {source} must be 'all', empty, a skill list, or an options mapping")
 
 
 def remove_source_skill(sources: dict[Any, Any], source: str, skill: str) -> bool:
     current = sources[source]
-    if current is None:
+    if current is None or current == "all":
         raise ValueError(f"source {source} selects all skills; remove the source instead")
     if isinstance(current, list):
         skills = list(current)
@@ -436,8 +445,10 @@ def remove_source_skill(sources: dict[Any, Any], source: str, skill: str) -> boo
         return True
     if isinstance(current, dict):
         skills_value = current.get("skills") or []
+        if skills_value == "all":
+            skills_value = []
         if not isinstance(skills_value, list):
-            raise ValueError(f"source {source} skills must be a list")
+            raise ValueError(f"source {source} skills must be 'all' or a list")
         if not skills_value:
             raise ValueError(f"source {source} selects all skills; remove the source instead")
         skills = list(skills_value)
@@ -451,7 +462,7 @@ def remove_source_skill(sources: dict[Any, Any], source: str, skill: str) -> boo
         else:
             del sources[source]
         return True
-    raise ValueError(f"source {source} must be empty, a skill list, or an options mapping")
+    raise ValueError(f"source {source} must be 'all', empty, a skill list, or an options mapping")
 
 
 def upsert_skill(skills: list[Any], skill: str, *, name: str | None = None) -> bool:
