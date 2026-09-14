@@ -36,7 +36,7 @@ in user scope.
 sources:
   anthropics/skills:
     - skill-creator
-  mavam/quarto-brief:
+  mavam/quarto-brief: all
   openclaw/gogcli:
     - gog
   acme/skills:
@@ -54,9 +54,21 @@ sources:
         spec: agents
 ```
 
-An empty value installs all skills from a source. A list is the common form for
-selected skills. Use a nested mapping for source options such as `pin` and custom
-`install` commands. Put `frontmatter` overrides on an individual skill entry. Skeel
+Use `all` to install every skill discovered in a source. A list selects individual
+skills; `[all]` selects a skill literally named `all`. With source options, use
+`skills: all`:
+
+```yaml
+sources:
+  mavam/skills:
+    pin: main
+    skills: all
+```
+
+Empty values and options mappings without `skills` still select all skills for
+backward compatibility. The CLI writes explicit `all` selectors when adding or
+selecting an entire source. Custom `install` commands require an explicit skill
+list rather than `all`. Put `frontmatter` overrides on an individual skill entry. Skeel
 applies configured top-level fields to the installed `SKILL.md`, reapplies them after
 updates, and reports drift through `diff`.
 
@@ -429,7 +441,7 @@ skills from that repository:
 
 ```yaml
 sources:
-  mavam/quarto-brief:
+  mavam/quarto-brief: all
 ```
 
 which runs:
