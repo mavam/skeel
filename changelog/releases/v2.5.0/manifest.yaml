@@ -1,0 +1,9 @@
+created: 2026-09-14
+title: Explicit all-skills selectors
+intro: >-
+  You can now select every skill from a source with an explicit all selector, including
+  alongside pinned revisions. Existing manifests remain compatible, and the CLI writes
+  the clearer syntax for whole-source additions.
+source:
+  mode: sync-stable-queue
+  previous_stable: v2.4.0
