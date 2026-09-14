@@ -1,0 +1,9 @@
+created: 2026-09-14
+title: Native Nix and Home Manager support
+intro: >-
+  Manage agent skills natively with Nix and Home Manager using pinned sources, declarative
+  selections, and frontmatter overrides. This release also lets you install skills
+  under custom local names.
+source:
+  mode: sync-stable-queue
+  previous_stable: v2.2.0
