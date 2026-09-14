@@ -46,6 +46,7 @@ from .io import (
 from .manifest import (
     DesiredSkill,
     Manifest,
+    ManifestUpdate,
     load_manifest,
     manifest_path,
     parse_skill,
@@ -354,6 +355,25 @@ def prefer_list_context(candidate: ListContext, current: ListContext) -> bool:
     return candidate.scope == "user" and current.scope != "user"
 
 
+def manifest_runtimes(
+    command: CommonOptions, runtime: Runtime, manifest: Manifest | None
+) -> tuple[Runtime, ...]:
+    """Expand manifest defaults without changing how its path was selected."""
+    if command.agent is not None or command.dir is not None or not manifest or not manifest.agents:
+        return (runtime,)
+    runtimes: dict[Path, Runtime] = {}
+    for agent in manifest.agents:
+        target = resolve_target(
+            scope=runtime.target.scope,
+            agent=agent,
+            cwd=Path.cwd(),
+            home=Path.home(),
+        )
+        # Aliases and symlinked agent directories must not run twice.
+        runtimes.setdefault(canonical_path(target.directory), replace(runtime, target=target))
+    return tuple(runtimes.values())
+
+
 def select_manifest_contexts(command: CommonOptions) -> ManifestSelection:
     contexts: dict[SelectionKey, ManifestContext] = {}
     missing_paths: dict[SelectionKey, Path] = {}
@@ -368,12 +388,12 @@ def select_manifest_contexts(command: CommonOptions) -> ManifestSelection:
                 missing_paths[key] = runtime.manifest_path
             continue
 
-        context = ManifestContext(scope=scope, runtime=runtime, manifest=manifest)
-        missing_paths.pop(key, None)
-        if key not in contexts:
-            contexts[key] = context
-        elif prefer_manifest_context(context, contexts[key]):
-            contexts[key] = context
+        for selected_runtime in manifest_runtimes(command, runtime, manifest):
+            key = selection_key(selected_runtime)
+            context = ManifestContext(scope=scope, runtime=selected_runtime, manifest=manifest)
+            missing_paths.pop(key, None)
+            if key not in contexts or prefer_manifest_context(context, contexts[key]):
+                contexts[key] = context
 
     return ManifestSelection(
         contexts=tuple(contexts.values()),
@@ -385,11 +405,12 @@ def select_list_contexts(command: CommonOptions) -> ListSelection:
     contexts: dict[SelectionKey, ListContext] = {}
     for scope in manifest_scopes(command):
         runtime = build_runtime_for_scope(command, scope=scope)
-        key = selection_key(runtime)
         manifest = load_runtime_manifest(runtime)
-        context = ListContext(scope=scope, runtime=runtime, manifest=manifest)
-        if key not in contexts or prefer_list_context(context, contexts[key]):
-            contexts[key] = context
+        for selected_runtime in manifest_runtimes(command, runtime, manifest):
+            key = selection_key(selected_runtime)
+            context = ListContext(scope=scope, runtime=selected_runtime, manifest=manifest)
+            if key not in contexts or prefer_list_context(context, contexts[key]):
+                contexts[key] = context
     return ListSelection(contexts=tuple(contexts.values()))
 
 
@@ -407,26 +428,33 @@ async def manifest_scope_inventories(
         for context in selection.contexts
     ]
 
-    if (
-        command.all
-        and any(inventory.scope == "user" for inventory in inventories)
-        and not any(inventory.scope == "project" for inventory in inventories)
-    ):
-        project_runtime = build_runtime_for_scope(command, scope="project")
-        project_key = selection_key(project_runtime)
-        if all(selection_key(inventory.runtime) != project_key for inventory in inventories):
-            inventories.insert(
-                0,
-                ScopeInventory(
-                    scope="project",
-                    runtime=project_runtime,
-                    manifest=load_runtime_manifest(project_runtime),
-                    installed=await installed_skills(
-                        project_runtime.target,
-                        project_runtime.runner,
-                    ),
-                ),
+    if command.all:
+        for inventory in tuple(inventories):
+            agent = inventory.runtime.target.agent
+            if inventory.scope != "user" or any(
+                item.scope == "project" and item.runtime.target.agent == agent
+                for item in inventories
+            ):
+                continue
+            project_runtime = build_runtime_for_scope(command, scope="project")
+            project_runtime = replace(
+                project_runtime,
+                target=resolve_target(scope="project", agent=agent, directory=command.dir),
             )
+            project_key = selection_key(project_runtime)
+            if all(selection_key(item.runtime) != project_key for item in inventories):
+                inventories.insert(
+                    0,
+                    ScopeInventory(
+                        scope="project",
+                        runtime=project_runtime,
+                        manifest=None,
+                        installed=await installed_skills(
+                            project_runtime.target,
+                            project_runtime.runner,
+                        ),
+                    ),
+                )
 
     return tuple(inventories)
 
@@ -446,6 +474,24 @@ async def list_scope_inventories(selection: ListSelection) -> tuple[ScopeInvento
 
 
 def shadow_user_inventories(
+    inventories: Sequence[ScopeInventory],
+) -> ShadowedInventories:
+    groups: dict[str | None, list[ScopeInventory]] = {}
+    for inventory in inventories:
+        groups.setdefault(inventory.runtime.target.agent, []).append(inventory)
+    filtered: dict[SelectionKey, ScopeInventory] = {}
+    warnings: list[SkillShadowWarning] = []
+    for group in groups.values():
+        result = shadow_agent_inventories(group)
+        filtered.update((selection_key(item.runtime), item) for item in result.inventories)
+        warnings.extend(result.warnings)
+    return ShadowedInventories(
+        inventories=tuple(filtered[selection_key(item.runtime)] for item in inventories),
+        warnings=tuple(dict.fromkeys(warnings)),
+    )
+
+
+def shadow_agent_inventories(
     inventories: Sequence[ScopeInventory],
 ) -> ShadowedInventories:
     if any(
@@ -897,14 +943,19 @@ async def apply_manifest(
     scope: str | None = None,
     removals: Sequence[RemoveTarget] = (),
 ) -> int:
-    steps = await apply_steps(
-        manifest,
-        runtime,
-        reinstall=reinstall,
-        scope=scope,
-        removals=removals,
-    )
-    results, exit_code = await run_apply_steps(command, runtime, steps)
+    results: list[StepResult] = []
+    exit_code = 0
+    for selected_runtime in manifest_runtimes(command, runtime, manifest):
+        steps = await apply_steps(
+            manifest,
+            selected_runtime,
+            reinstall=reinstall,
+            scope=scope,
+            removals=removals,
+        )
+        target_results, target_exit_code = await run_apply_steps(command, selected_runtime, steps)
+        results.extend(target_results)
+        exit_code = exit_code or target_exit_code
     return finish_apply_results(
         command,
         runtime.terminal,
@@ -1088,19 +1139,26 @@ async def command_remove_all(command: RemoveOptions) -> int:
     updated_manifests: dict[SelectionKey, Manifest] = {}
     apply_keys: set[SelectionKey] = set()
     remove_targets: dict[SelectionKey, list[RemoveTarget]] = {}
+    updates: dict[Path, ManifestUpdate] = {}
     for context, target in matches:
-        update = remove_manifest_source(
-            context.runtime.manifest_path,
-            target.source,
-            target.skill,
-            dry_run=command.dry_run,
-        )
+        path = canonical_path(context.runtime.manifest_path)
+        first_target = path not in updates
+        if first_target:
+            updates[path] = remove_manifest_source(
+                context.runtime.manifest_path,
+                target.source,
+                target.skill,
+                dry_run=command.dry_run,
+            )
+        update = updates[path]
         context_key = selection_key(context.runtime)
         updated_manifests[context_key] = update.manifest
         apply_keys.add(context_key)
         remove_targets.setdefault(context_key, []).extend(
             expand_remove_target(context.manifest, target)
         )
+        if not first_target:
+            continue
         removals.append(
             {
                 "scope": context.scope,

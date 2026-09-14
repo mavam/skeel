@@ -10,6 +10,8 @@ from typing import Any
 
 import yaml
 
+from .targets import find_agent
+
 DEFAULT_MANIFEST = ".agents/skills.yaml"
 
 
@@ -58,6 +60,7 @@ class DesiredSkill:
 class Manifest:
     path: Path
     sources: tuple[SourceSpec, ...]
+    agents: tuple[str, ...] = ()
 
     @property
     def desired_skill_names(self) -> set[str]:
@@ -238,6 +241,19 @@ def load_manifest_data(path: Path, *, missing_ok: bool = True) -> dict[str, Any]
 
 
 def parse_manifest_data(data: dict[str, Any], path: Path) -> Manifest:
+    agents: tuple[str, ...] = ()
+    if "agents" in data:
+        value = data["agents"]
+        if (
+            not isinstance(value, list)
+            or not value
+            or not all(isinstance(agent, str) for agent in value)
+        ):
+            raise ValueError("manifest agents must be a non-empty list of agent names")
+        for agent in value:
+            find_agent(agent)
+        agents = tuple(dict.fromkeys(value))
+
     sources_value = data.get("sources") or {}
     if not isinstance(sources_value, dict):
         raise ValueError("manifest sources must be a mapping")
@@ -252,6 +268,7 @@ def parse_manifest_data(data: dict[str, Any], path: Path) -> Manifest:
     return Manifest(
         path=path,
         sources=sources,
+        agents=agents,
     )
 
 
