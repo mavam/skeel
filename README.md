@@ -4,6 +4,10 @@ Declarative agent skill management.
 
 **skeel** reads a desired-state manifest and applies it through `gh skill`.
 
+For Nix users, the flake also provides the CLI package and a native Home Manager
+module that builds skills from pinned sources without activation-time installers.
+See [Nix and Home Manager](nix/README.md).
+
 ## ✨ Features
 
 - **Desired state**: declare skill sources in one YAML file
