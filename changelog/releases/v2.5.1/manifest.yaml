@@ -1,0 +1,9 @@
+created: 2026-09-25
+title: Safe pruning of renamed skills
+intro: >-
+  Skeel now preserves declared skills with custom local names during pruning. Renamed
+  skills such as elevenlabs-agents no longer appear as extras or get deleted by apply
+  --prune.
+source:
+  mode: sync-stable-queue
+  previous_stable: v2.5.0
