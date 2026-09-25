@@ -116,6 +116,40 @@ def test_apply_renames_matching_upstream_skill_in_place(tmp_path: Path, monkeypa
     assert skills["elevenlabs-agents"]["installPath"] == str(renamed.resolve())
 
 
+@pytest.mark.parametrize("usable", [True, False])
+def test_prune_preserves_usable_renamed_skill(tmp_path: Path, usable: bool) -> None:
+    target = SkillTarget(directory=tmp_path, scope="user")
+    skill_path = tmp_path / "elevenlabs-agents"
+    skill_path.mkdir()
+    (skill_path / "SKILL.md").write_text("---\nname: elevenlabs-agents\n---\n")
+    manifest = manifest_with(
+        SourceSpec(
+            source="elevenlabs/skills",
+            skills=(SkillSpec(spec="agents", name="elevenlabs-agents"),),
+        )
+    )
+    renamed = InstalledSkill(
+        name="agents",
+        path=skill_path,
+        source_url="https://github.com/elevenlabs/skills",
+        usable=usable,
+    )
+    obsolete_path = tmp_path / "obsolete"
+    write_skill(obsolete_path)
+    obsolete = installed("obsolete", tmp_path)
+    current = (renamed, obsolete)
+
+    diff = diff_installed_skills(manifest, current)
+    assert diff.extra == ((obsolete,) if usable else (renamed, obsolete))
+    plan = apply_plan(manifest, target, current, prune=True)
+    removed = {step.remove_path for step in plan if step.kind == "remove"}
+    assert removed == ({obsolete_path} if usable else {skill_path, obsolete_path})
+    if usable:
+        assert diff.missing == ()
+        assert diff.changed == ()
+        assert len(plan) == 1
+
+
 def test_apply_reconciles_frontmatter(tmp_path: Path) -> None:
     target = SkillTarget(directory=tmp_path, scope="project")
     skill_path = tmp_path / "deploy"
