@@ -444,6 +444,7 @@ def diff_installed_skills(
             or (
                 skill.name not in desired
                 and skill.basename not in desired
+                and skill.path.name not in desired
                 and not any(
                     installed_skill_matches_dynamic_source(skill, source)
                     for source in dynamic_sources
