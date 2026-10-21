@@ -52,12 +52,13 @@ py.buildPythonApplication {
     "skeel.cli"
   ];
   makeWrapperArgs = [
-    "--suffix PATH : ${
-      lib.makeBinPath [
-        gh
-        git
-      ]
-    }"
+    "--suffix"
+    "PATH"
+    ":"
+    (lib.makeBinPath [
+      gh
+      git
+    ])
   ];
 
   meta = {
