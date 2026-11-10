@@ -3,6 +3,8 @@ title: Custom installer updates
 type: bugfix
 authors:
   - mavam
+prs:
+  - 31
 created: 2026-11-10T08:27:40.135484Z
 ---
 
