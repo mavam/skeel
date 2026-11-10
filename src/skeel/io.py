@@ -657,17 +657,17 @@ class Terminal:
         summary = [
             (len(failed), "failed", MARKER_FAILURE.color),
             (len(updated), "updated", MARKER_UPDATED.color),
-            (len(current), "current", MARKER_CURRENT.color),
-            (pinned, "pinned", MARKER_NOOP.color),
+            (len(current), "up to date", MARKER_CURRENT.color),
+            (pinned, "skipped (pinned)", MARKER_NOOP.color),
             (len(skipped) - pinned, "skipped", MARKER_SKIPPED.color),
         ]
         counts = [Text(f"{count} {label}", style=style) for count, label, style in summary if count]
         if counts:
             text = Text(style=STYLE_DETAIL)
-            if len(targets) > 1:
-                text.append(f"{len(results)} operations: ")
+            if names:
+                text.append(", ".join(dict.fromkeys(names.values())), style=STYLE_TARGET)
+                text.append(": ")
             text.append_text(Text(", ", style=STYLE_DETAIL).join(counts))
-            append_targets(text, list(names.values()))
             self.error_console.print(text)
         warnings: dict[str, list[str]] = {}
         for result in results:

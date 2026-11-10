@@ -50,7 +50,7 @@ def test_identical_results_share_a_row_but_counts_remain_per_operation(targets, 
     assert str(Path.home()) not in output
     assert normalized.count("↑ ⌂ rex custom installer universal, claude-code") == 1
     assert "2 updated" in output
-    assert "2 operations: 2 updated  universal, claude-code" in output
+    assert "universal, claude-code: 2 updated" in output
     assert "[" not in output
     assert "]" not in output
 
@@ -65,7 +65,7 @@ def test_different_outcomes_stay_separate(targets, capsys, verbose):
     assert ("= ⌂ rex custom installer claude-code" in normalized) == verbose
     assert "universal, claude-code" not in output.split("\n\n", 1)[0]
     assert "1 updated" in output
-    assert "1 current" in output
+    assert "1 up to date" in output
 
 
 @pytest.mark.parametrize(
@@ -131,7 +131,7 @@ def test_scope_distinguishes_the_same_agent_without_paths(targets, capsys):
 def test_single_target_stays_compact(targets, capsys):
     Terminal().render_update_summary([updated(targets[0])], verbose=False)
     assert capsys.readouterr().err == (
-        "↑ ⌂ rex  custom installer  universal\n\n1 updated  universal\n"
+        "↑ ⌂ rex  custom installer  universal\n\nuniversal: 1 updated\n"
     )
 
 
@@ -144,7 +144,7 @@ def test_plain_output_keeps_targets_readable_at_narrow_widths(targets, capsys, m
     output = capsys.readouterr().err
     normalized = " ".join(output.split())
     assert "rex custom installer universal, claude-code" in normalized
-    assert "2 operations: 2 updated universal, claude-code" in normalized
+    assert "universal, claude-code: 2 updated" in normalized
     assert "\x1b" not in output
     assert "[" not in output
 
@@ -223,10 +223,10 @@ def test_pinned_rows_align_fields_and_use_a_single_summary_line(targets, capsys)
     assert len({row.index("pinned") for row in rows}) == 1
     assert len({row.index("universal") for row in rows}) == 1
     assert len({row.index(source) for row, source in zip(rows, skills.values(), strict=True)}) == 1
-    assert output.splitlines()[-1] == "7 operations: 1 current, 6 pinned  universal, claude-code"
+    assert output.splitlines()[-1] == "universal, claude-code: 1 up to date, 6 skipped (pinned)"
     assert "!" not in output
     assert "·" not in output
-    assert "skipped" not in output
+    assert "6 skipped (pinned)" in output
 
 
 def test_pinned_presentation_does_not_hide_real_skips_or_change_json(targets, capsys):
@@ -240,7 +240,7 @@ def test_pinned_presentation_does_not_hide_real_skips_or_change_json(targets, ca
     normalized = " ".join(output.split())
     assert "= ⌂ rex pinned universal" in normalized
     assert "! ⌂ rex missing GitHub metadata claude-code" in normalized
-    assert "2 operations: 1 pinned, 1 skipped  universal, claude-code" in output
+    assert "universal, claude-code: 1 skipped (pinned), 1 skipped" in output
     assert results[0].json()["status"] == "skipped"
     assert results[0].json()["detail"] == "pinned"
 
@@ -253,4 +253,28 @@ def test_apply_output_identifies_agent_without_a_directory(targets, capsys):
 def test_quiet_current_summary_identifies_agents_without_paths(targets, capsys):
     results = [updated(target, status="current") for target in targets]
     Terminal().render_update_summary(results, verbose=False)
-    assert capsys.readouterr().err == "2 operations: 2 current  universal, claude-code\n"
+    assert capsys.readouterr().err == "universal, claude-code: 2 up to date\n"
+
+
+@pytest.mark.parametrize("agent_count", [1, 2])
+def test_summary_uses_the_same_agent_first_format_for_one_or_many_agents(
+    targets, capsys, agent_count
+):
+    selected = targets[-agent_count:]
+    results = []
+    for target in selected:
+        results.extend(
+            updated(target, label=f"current-{index}", status="current") for index in range(16)
+        )
+        results.extend(
+            updated(target, label=f"pinned-{index}", status="skipped", detail="pinned")
+            for index in range(3)
+        )
+    Terminal().render_update_summary(results, verbose=False)
+    output = capsys.readouterr().err
+    agents = ", ".join(target.agent for target in selected)
+    assert output.splitlines()[-1] == (
+        f"{agents}: {16 * agent_count} up to date, {3 * agent_count} skipped (pinned)"
+    )
+    assert "operations" not in output
+    assert "Across" not in output

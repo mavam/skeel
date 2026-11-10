@@ -226,8 +226,7 @@ def test_custom_update_uses_each_target(setup, monkeypatch, capsys, dry_run, jso
         if not dry_run:
             assert output.count("= ⌂ rex custom installer") == 1
             assert "universal, claude-code" in output
-            assert "2 current" in output
-            assert "2 operations: 2 current universal, claude-code" in output
+            assert "universal, claude-code: 2 up to date" in output
 
 
 def test_custom_skill_selector_refreshes_and_verifies_whole_source(setup, monkeypatch, capsys):

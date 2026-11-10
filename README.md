@@ -194,14 +194,14 @@ Multi-target updates collapse identical results into one row with a trailing
 list of agents. Different outcomes and failures stay separate, and scope glyphs
 distinguish project and user installs of the same agent. Counts still include
 every operation in every target, not just the visible rows or the number of skills
-a source installs. A single summary line separates intentional pinned skips from
-other skipped updates. JSON keeps one execution step per operation, including
-`directory` and, for known agents, `agent`.
+a source installs. A single summary line starts with the agent names and separates
+intentional pinned skips from other skipped updates. JSON keeps one execution step
+per operation, including `directory` and, for known agents, `agent`.
 
 ```text
 ↑ ⌂ rex  custom installer  universal, claude-code
 
-2 operations: 2 updated  universal, claude-code
+universal, claude-code: 2 updated
 ```
 
 For scripts, pass `--json` to `add`, `apply`, `diff`, `list`, `path`, `remove`,
