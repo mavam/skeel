@@ -539,7 +539,7 @@ name: metadata-repair
     assert outcome.detail == "unknown → main@abcdef1"
 
 
-def test_update_steps_keep_manual_install_skill_with_missing_metadata_on_gh_update(
+def test_update_steps_refresh_manual_install_skill_without_github_metadata(
     tmp_path: Path,
 ) -> None:
     skill_path = tmp_path / "manual-helper"
@@ -570,16 +570,10 @@ name: manual-helper
 
     step = update_steps([skill], SkillTarget(directory=tmp_path), manifest=manifest)[0]
 
-    assert step.label == "example/manual-skills@manual-helper"
-    assert step.command == [
-        "gh",
-        "skill",
-        "update",
-        "manual-helper",
-        "--dir",
-        str(tmp_path),
-        "--all",
-    ]
+    assert step.label == "example/manual-skills@*"
+    assert step.command == ["custom-installer", "install", "manual-helper"]
+    assert step.executor is not None
+    assert not step.parallel
 
 
 def test_update_steps_use_archive_installer_for_pinned_manifest_skills(tmp_path: Path) -> None:

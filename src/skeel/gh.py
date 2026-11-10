@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
@@ -37,6 +38,7 @@ from .io import (
     StepPostprocessor,
     build_removal_guard,
     move_guarded_directory,
+    quote_command,
 )
 from .manifest import DesiredSkill, Manifest, SkillSpec, SourceSpec
 from .targets import SkillTarget
@@ -85,6 +87,7 @@ class SkillStep:
     postprocess: StepPostprocessor | None = None
     preview_detail: str | None = None
     parallel: bool = True
+    target: SkillTarget | None = None
 
 
 @dataclass(frozen=True)
@@ -803,11 +806,18 @@ def matching_desired_install(
     return None
 
 
-def scoped_steps(steps: Sequence[SkillStep], scope: str | None) -> list[SkillStep]:
-    """Stamp every step from a manifest context with its scope for display."""
-    if scope is None:
-        return list(steps)
-    return [replace(step, scope=scope) for step in steps]
+def scoped_steps(
+    steps: Sequence[SkillStep], scope: str | None, *, target: SkillTarget | None = None
+) -> list[SkillStep]:
+    """Attach manifest scope and installation target to execution and display."""
+    return [
+        replace(
+            step,
+            scope="custom" if target is not None and target.scope == "custom" else scope,
+            target=target,
+        )
+        for step in steps
+    ]
 
 
 def update_steps(
@@ -828,6 +838,20 @@ def update_steps(
     orphan_source = dynamic_sources[0] if len(dynamic_sources) == 1 else None
     excluded_paths: set[Path] = set()
     steps: list[SkillStep] = []
+
+    # Custom commands own the whole source, not individual GitHub skills.
+    for source in manifest.sources:
+        if not source.install:
+            continue
+        attributed = [
+            skill
+            for skill in installed
+            if (match := matching_desired_install(skill, specs)) and match[0] == source
+        ]
+        if not attributed:
+            continue
+        excluded_paths.update(skill.path for skill in attributed)
+        steps.append(manual_update_step(source, target, manifest, attributed))
 
     # Refresh install-all entries once at source level so the installer can
     # discover skills that were added upstream since the previous install.
@@ -900,6 +924,70 @@ def update_steps(
             step = with_renamed_update_detail(step, matched_spec)
         steps.append(step)
     return steps
+
+
+def manual_update_step(
+    source: SourceSpec,
+    target: SkillTarget,
+    manifest: Manifest,
+    installed: Sequence[InstalledSkill],
+) -> SkillStep:
+    steps = manual_install_steps(source, target, manifest)
+    # This shell form is for previews and JSON only. Execute the original argv
+    # lists below, preserving the custom installer's environment and validation.
+    command = (
+        steps[0].command
+        if len(steps) == 1
+        else ["sh", "-c", " && ".join(quote_command(step.command) for step in steps)]
+    )
+    paths = {skill.path for skill in installed} | {
+        target.directory / skill.name for skill in source.skills
+    }
+    before = skill_files_snapshot(paths)
+
+    async def execute() -> ProcessResult:
+        stdout: list[str] = []
+        stderr: list[str] = []
+        for step in steps:
+            assert step.executor is not None
+            result = await step.executor()
+            if result.returncode == 0 and step.postprocess is not None:
+                result = step.postprocess(result)
+            stdout.append(result.stdout)
+            stderr.append(result.stderr)
+            if result.returncode:
+                break
+        return replace(result, command=command, stdout="\n".join(stdout), stderr="\n".join(stderr))
+
+    def outcome(result: ProcessResult) -> StepOutcome:
+        del result
+        return StepOutcome(
+            status="current" if before == skill_files_snapshot(paths) else "updated",
+            detail="custom installer",
+        )
+
+    return SkillStep(
+        label=source_skill_label(source.source, "*"),
+        command=command,
+        executor=execute,
+        outcome=outcome,
+        parallel=False,
+        preview_detail="custom installer (source-wide)",
+    )
+
+
+def skill_files_snapshot(paths: set[Path]) -> dict[Path, tuple[int, str]]:
+    """Compare skill content and permissions, not installer-written timestamps."""
+    snapshot: dict[Path, tuple[int, str]] = {}
+    for root in sorted(paths):
+        for path in sorted(root.rglob("*")):
+            if path.is_symlink():
+                snapshot[path] = (path.lstat().st_mode, str(path.readlink()))
+            elif path.is_file():
+                with path.open("rb") as stream:
+                    digest = hashlib.file_digest(stream, "sha256").hexdigest()
+                snapshot[path] = (path.stat().st_mode, digest)
+    return snapshot
 
 
 def with_renamed_update_detail(step: SkillStep, desired: SkillSpec) -> SkillStep:

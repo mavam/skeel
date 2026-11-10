@@ -8,7 +8,7 @@ import shutil
 import stat
 import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, Protocol
 
@@ -16,6 +16,8 @@ from rich.console import Console, RenderableType
 from rich.progress import Progress, ProgressColumn, Task, TaskID
 from rich.spinner import Spinner
 from rich.text import Text
+
+from .targets import SkillTarget
 
 Command = list[str]
 StepExecutor = Callable[[], Awaitable["ProcessResult"]]
@@ -34,7 +36,7 @@ MARKER_SUCCESS = OutputMarker("✔︎", "green")
 MARKER_SKIPPED = OutputMarker("!", "yellow")
 MARKER_FAILURE = OutputMarker("✘", "red")
 MARKER_UPDATED = OutputMarker("↑", "green")
-MARKER_CURRENT = OutputMarker("·", "bright_black")
+MARKER_CURRENT = OutputMarker("=", "bright_black")
 MARKER_INSTALL = OutputMarker("+", "green")
 MARKER_REMOVE = OutputMarker("-", "red")
 MARKER_PREVIEW = OutputMarker("↳", "cyan")
@@ -44,8 +46,9 @@ SCOPE_USER = "⌂"
 SCOPE_PROJECT = "★"
 STYLE_REPO = "not bold cyan"
 STYLE_SEPARATOR = "not bold bright_black"
-STYLE_SKILL = "bold black"
+STYLE_SKILL = "bold default"
 STYLE_DETAIL = "not bold bright_black"
+STYLE_TARGET = "not bold dim default"
 STYLE_NEW_VERSION = "not bold green"
 STYLE_WARNING = "yellow bold"
 
@@ -89,6 +92,7 @@ class StepResult:
     stderr: str = ""
     removed_paths: tuple[Path, ...] = ()
     warnings: tuple[str, ...] = ()
+    target: SkillTarget | None = None
 
     def json(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -103,6 +107,10 @@ class StepResult:
             payload["detail"] = self.detail
         if self.scope is not None:
             payload["scope"] = self.scope
+        if self.target is not None:
+            payload["directory"] = str(self.target.directory)
+            if self.target.agent is not None:
+                payload["agent"] = self.target.agent
         if self.stdout:
             payload["stdout"] = self.stdout
         if self.stderr:
@@ -147,6 +155,9 @@ class SkillStepLike(Protocol):
 
     @property
     def parallel(self) -> bool: ...
+
+    @property
+    def target(self) -> SkillTarget | None: ...
 
 
 class StepRuntime(Protocol):
@@ -220,20 +231,88 @@ def scoped_label_text(
     return text
 
 
-def label_text(label: str) -> Text:
-    text = Text()
+def display_directory(directory: Path) -> str:
+    try:
+        directory = Path("~") / directory.relative_to(Path.home())
+    except ValueError:
+        pass
+    return str(directory)
+
+
+def target_label(target: SkillTarget) -> str:
+    return target.agent or f"custom  {display_directory(target.directory)}"
+
+
+def append_targets(text: Text, names: Sequence[str]) -> None:
+    if names:
+        text.append("  ")
+        text.append(", ".join(dict.fromkeys(names)), style=STYLE_TARGET)
+
+
+def print_columns(console: Console, rows: Sequence[Sequence[Text]]) -> None:
+    """Align separate fields, stacking secondary fields when they won't fit."""
+    if not rows:
+        return
+    columns = [index for index in range(len(rows[0])) if any(row[index].plain for row in rows)]
+    widths = [max(row[index].cell_len for row in rows) for index in columns]
+    fits = sum(widths) + 2 * (len(columns) - 1) <= console.width
+    for row in rows:
+        cells = [row[index] for index in columns]
+        if not fits:
+            console.print(cells[0])
+            secondary = [cell for cell in cells[1:] if cell.plain]
+            if secondary:
+                console.print(Text("  ") + Text("  ").join(secondary))
+            continue
+        text = Text()
+        last = max(index for index, cell in enumerate(cells) if cell.plain)
+        for index, cell in enumerate(cells[: last + 1]):
+            text.append_text(cell)
+            if index < last:
+                text.append(" " * (widths[index] - cell.cell_len + 2))
+        console.print(text)
+
+
+def pinned_result(result: StepResult) -> bool:
+    return result.status == "skipped" and (result.detail or "").partition(" ")[0] == "pinned"
+
+
+def collapse_update_rows(results: Sequence[StepResult]) -> list[list[StepResult]]:
+    """Merge identical successful outcomes across targets, never distinct diagnostics."""
+    rows: list[list[StepResult]] = []
+    matching: dict[tuple[str, str | None, str | None, str | None], list[StepResult]] = {}
+    for result in results:
+        mergeable = (
+            result.returncode == 0
+            and result.target is not None
+            and not result.warnings
+            and not result.removed_paths
+        )
+        key = (result.label, result.scope, result.status, result.detail)
+        group = matching.get(key) if mergeable else None
+        if group is not None and all(other.target != result.target for other in group):
+            group.append(result)
+        else:
+            group = [result]
+            rows.append(group)
+            if mergeable:
+                matching[key] = group
+    return rows
+
+
+def label_parts(label: str) -> tuple[str, str]:
     if "@" not in label:
-        text.append(label, style=STYLE_SKILL)
-        return text
-
+        return label, ""
     source, skill = label.rsplit("@", 1)
-    if skill == "*":
-        text.append(source, style=STYLE_SKILL)
-        return text
+    return (source, "") if skill == "*" else (skill, source)
 
-    text.append(skill, style=STYLE_SKILL)
-    text.append(" ", style=STYLE_SEPARATOR)
-    text.append(source, style=STYLE_REPO)
+
+def label_text(label: str) -> Text:
+    skill, source = label_parts(label)
+    text = Text(skill, style=STYLE_SKILL)
+    if source:
+        text.append(" ", style=STYLE_SEPARATOR)
+        text.append(source, style=STYLE_REPO)
     return text
 
 
@@ -257,11 +336,15 @@ class StepDescriptionColumn(ProgressColumn):
     def render(self, task: Task) -> RenderableType:
         detail = task.fields.get("detail")
         scope = task.fields.get("scope")
-        return scoped_label_text(
+        text = scoped_label_text(
             task.description,
             scope=scope if isinstance(scope, str) else None,
             detail=detail if isinstance(detail, str) else None,
         )
+        target = task.fields.get("target")
+        if isinstance(target, SkillTarget):
+            append_targets(text, [target_label(target)])
+        return text
 
 
 class ProcessRunner:
@@ -374,13 +457,15 @@ class Terminal:
     ) -> None:
         self.error_console.print(self.status_text(marker, label, detail=detail, scope=scope))
 
-    def warning(self, message: str) -> None:
+    def warning(self, message: str | Text) -> None:
         self.error_console.print(message, style=STYLE_WARNING)
 
     def failure_output(self, step: StepResult) -> None:
         output = (step.stderr or step.stdout).strip()
         if not output:
             return
+        if step.target is not None:
+            self.error_console.print(f"  {target_label(step.target)}", style=STYLE_TARGET)
         for line in output.splitlines():
             self.error_console.print(f"  {line}", style=STYLE_DETAIL)
 
@@ -507,11 +592,17 @@ class Terminal:
 
     def render_step_result(self, result: StepResult) -> None:
         marker, detail = self.step_result_marker(result)
-        self.step_status_line(marker, result.label, detail=detail, scope=result.scope)
+        text = self.status_text(marker, result.label, detail=detail, scope=result.scope)
+        if result.target is not None:
+            append_targets(text, [target_label(result.target)])
+        self.error_console.print(text)
         for warning in result.warnings:
             self.warning(warning)
 
     def render_update_summary(self, results: Sequence[StepResult], *, verbose: bool) -> None:
+        targets = list(dict.fromkeys(result.target for result in results if result.target))
+        names = {target: target_label(target) for target in targets}
+
         failed: list[StepResult] = []
         by_status: dict[str, list[StepResult]] = {
             "updated": [],
@@ -532,30 +623,69 @@ class Terminal:
         skipped = by_status["skipped"]
         current = by_status["current"]
 
-        rows = updated + (current if verbose else []) + skipped
-        for result in rows:
+        rows = updated + (current if verbose else []) + skipped + failed
+        groups = collapse_update_rows(rows) if len(targets) > 1 else [[result] for result in rows]
+        rendered: list[tuple[Text, Text, Text, Text]] = []
+        for group in groups:
+            result = group[0]
             marker, detail = self.step_result_marker(result)
-            self.step_status_line(marker, result.label, detail=detail, scope=result.scope)
+            skill, source = label_parts(result.label)
+            text = Text(marker.icon, style=marker.color)
+            text.append(" ")
+            if glyph := scope_glyph(result.scope):
+                text.append(f"{glyph} ", style=STYLE_DETAIL)
+            text.append(skill, style=STYLE_SKILL)
+            labels = [names[item.target] for item in group if item.target in names]
+            status_cell = detail_text(detail)
+            if step_failed(result):
+                status_cell = Text("failed", style=MARKER_FAILURE.color)
+            elif not status_cell.plain:
+                status_cell = Text(result.status or "", style=marker.color)
+            rendered.append(
+                (
+                    text,
+                    Text(source, style=STYLE_REPO),
+                    status_cell,
+                    Text(", ".join(dict.fromkeys(labels)), style=STYLE_TARGET),
+                )
+            )
+        print_columns(self.error_console, rendered)
         if rows:
             self.error_console.print()
 
+        pinned = sum(pinned_result(result) for result in skipped)
         summary = [
-            (len(updated), "updated", MARKER_UPDATED.color),
-            (len(skipped), "skipped", MARKER_SKIPPED.color),
             (len(failed), "failed", MARKER_FAILURE.color),
-            (len(current), "current", MARKER_CURRENT.color),
+            (len(updated), "updated", MARKER_UPDATED.color),
+            (len(current), "up to date", MARKER_CURRENT.color),
+            (pinned, "skipped (pinned)", MARKER_NOOP.color),
+            (len(skipped) - pinned, "skipped", MARKER_SKIPPED.color),
         ]
-        for count, label, style in summary:
-            if count:
-                self.error_console.print(f"{count} {label}", style=style)
+        counts = [Text(f"{count} {label}", style=style) for count, label, style in summary if count]
+        if counts:
+            text = Text(style=STYLE_DETAIL)
+            if names:
+                text.append(", ".join(dict.fromkeys(names.values())), style=STYLE_TARGET)
+                text.append(": ")
+            text.append_text(Text(", ", style=STYLE_DETAIL).join(counts))
+            self.error_console.print(text)
+        warnings: dict[str, list[str]] = {}
         for result in results:
             for warning in result.warnings:
-                self.warning(warning)
+                labels = warnings.setdefault(warning, [])
+                if result.target in names:
+                    labels.append(names[result.target])
+        for warning, labels in warnings.items():
+            text = Text(warning, style=STYLE_WARNING)
+            append_targets(text, labels)
+            self.warning(text)
 
     def step_result_marker(self, result: StepResult) -> tuple[OutputMarker, str | None]:
         if result.returncode not in (None, 0):
             return MARKER_FAILURE, None
 
+        if pinned_result(result):
+            return MARKER_NOOP, result.detail
         marker = status_marker(result.status)
         if marker is None:
             return MARKER_SUCCESS, result.detail
@@ -786,23 +916,25 @@ async def execute_skill_step(
     if step.remove_path is not None:
         if step.removal_guard is None:
             raise ValueError(f"remove step lacks execution guard: {step.remove_path}")
-        return runtime.terminal.execute_remove_step(
+        result = runtime.terminal.execute_remove_step(
             step.label,
             step.command,
             step.remove_path,
             step.removal_guard,
             scope=step.scope,
         )
-    return await runtime.terminal.execute_step(
-        step.label,
-        step.command,
-        runtime.runner,
-        outcome=step.outcome,
-        executor=step.executor,
-        postprocess=step.postprocess,
-        default_status=default_status,
-        scope=step.scope,
-    )
+    else:
+        result = await runtime.terminal.execute_step(
+            step.label,
+            step.command,
+            runtime.runner,
+            outcome=step.outcome,
+            executor=step.executor,
+            postprocess=step.postprocess,
+            default_status=default_status,
+            scope=step.scope,
+        )
+    return replace(result, target=step.target)
 
 
 async def run_serial_step(
@@ -823,7 +955,7 @@ async def run_serial_step(
         return result
 
     with runtime.terminal.progress(transient=True) as progress:
-        task_id = progress.add_task(step.label, total=1, scope=step.scope or "")
+        task_id = progress.add_task(step.label, total=1, scope=step.scope or "", target=step.target)
         result = await execute_skill_step(step, runtime, default_status=default_status)
         runtime.terminal.finish_progress_task(progress, task_id, result)
         if should_remove_progress_task(
@@ -870,7 +1002,7 @@ async def run_parallel_step_group(
         while work := await next_step():
             index, step = work
             task_id = (
-                progress.add_task(step.label, total=1, scope=step.scope or "")
+                progress.add_task(step.label, total=1, scope=step.scope or "", target=step.target)
                 if progress is not None
                 else None
             )
@@ -925,11 +1057,19 @@ async def run_steps(
     results: list[StepResult] = []
     exit_code = 0
     index = 0
+    multiple_targets = len({step.target for step in steps}) > 1
     while index < len(steps):
         step = steps[index]
         if dry_run:
+            if (
+                multiple_targets
+                and not runtime.terminal.json_output
+                and step.target is not None
+                and (index == 0 or steps[index - 1].target != step.target)
+            ):
+                runtime.terminal.line(Text(target_label(step.target), style="bold"))
             result = dry_run_step_result(step, runtime, dry_run_action=dry_run_action)
-            results.append(result)
+            results.append(replace(result, scope=step.scope, target=step.target))
             index += 1
             continue
 

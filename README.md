@@ -183,7 +183,26 @@ and `update` when using the implicit manifests.
 Human output is consistent across commands: the first column is the action
 marker, the second column is a muted scope glyph (`★` for project, `⌂` for
 user), followed by the skill name, the source, and a muted suffix for versions,
-paths, or diagnostic details.
+paths, or diagnostic details. Skill names use bold text, sources use cyan, and
+targets use muted text without brackets. Update rows align skill, source, status,
+and targets in separate columns, stacking secondary fields on narrow terminals.
+Current and pinned results use a neutral `=` marker instead of a warning.
+Execution progress, apply results, and update summaries identify the agent without
+repeating its installation directory. Custom `--dir` targets still show their path.
+
+Multi-target updates collapse identical results into one row with a trailing
+list of agents. Different outcomes and failures stay separate, and scope glyphs
+distinguish project and user installs of the same agent. Counts still include
+every operation in every target, not just the visible rows or the number of skills
+a source installs. A single summary line starts with the agent names and separates
+intentional pinned skips from other skipped updates. JSON keeps one execution step
+per operation, including `directory` and, for known agents, `agent`.
+
+```text
+↑ ⌂ rex  custom installer  universal, claude-code
+
+universal, claude-code: 2 updated
+```
 
 For scripts, pass `--json` to `add`, `apply`, `diff`, `list`, `path`, `remove`,
 or `update` to emit one machine-readable object on stdout.
@@ -278,9 +297,16 @@ pin such as `main`. This refresh also installs skills added to the upstream
 source since the previous update.
 
 Pass a source, or a source and skill, to update only that manifest selection. A
-source-and-skill selector stays targeted to that skill, even when the manifest
-entry normally installs all skills. A selector that does not match the manifest
-exits with an error.
+source-and-skill selector stays targeted to that skill for GitHub sources, even
+when the manifest entry normally installs all skills. A selector that does not
+match the manifest exits with an error.
+
+For a source with custom `install` commands, `update` reruns those commands once
+per target, in order, using the same `SKEEL_*` environment as `apply`. Custom
+sources don't need GitHub metadata. Selecting one of their skills refreshes the
+whole source because the installer controls all its outputs. A failed command
+stops that source's command sequence; other sources and targets can still update.
+Unchanged file contents and permissions report `current` rather than `updated`.
 
 ```sh
 uvx skeel update
