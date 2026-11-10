@@ -1,0 +1,8 @@
+created: 2026-11-10
+title: Clearer skill updates across agents
+intro: >-
+  Skeel now refreshes custom-installed skills and shows clearer, agent-focused update
+  results. This release also fixes Nix installation compatibility with current nixpkgs.
+source:
+  mode: sync-stable-queue
+  previous_stable: v2.5.1
