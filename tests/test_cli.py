@@ -2166,9 +2166,9 @@ def test_update_summary_renders_changed_rows_and_tally(tmp_path, capsys, monkeyp
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.splitlines() == [
-        "↑ ⌂ tenzir-ship  tenzir/skills  main@9f3e1a2 → main@12c7aa3",
+        "↑ ⌂ tenzir-ship  tenzir/skills  main@9f3e1a2 → main@12c7aa3  universal",
         "",
-        "1 updated, 27 current",
+        "1 updated, 27 current  universal",
     ]
     assert all(not line.startswith(" ") for line in captured.err.splitlines() if line)
 
@@ -2198,7 +2198,7 @@ def test_update_summary_collapses_all_current_output(tmp_path, capsys, monkeypat
 
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err == "28 current\n"
+    assert captured.err == "28 current  universal\n"
 
 
 def test_update_verbose_lists_current_rows(tmp_path, capsys, monkeypatch) -> None:

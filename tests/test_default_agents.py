@@ -219,13 +219,15 @@ def test_custom_update_uses_each_target(setup, monkeypatch, capsys, dry_run, jso
     else:
         output = " ".join((captured.out if dry_run else captured.err).split())
         assert "missing GitHub metadata" not in output
-        assert "universal ~/.agents/skills" in output
-        assert "claude-code ~/.claude/skills" in output
+        assert "universal" in output
+        assert "claude-code" in output
+        assert "skills" not in output
+        assert str(home) not in output
         if not dry_run:
             assert output.count("= ⌂ rex custom installer") == 1
             assert "universal, claude-code" in output
             assert "2 current" in output
-            assert "2 operations across 2 targets" in output
+            assert "2 operations: 2 current universal, claude-code" in output
 
 
 def test_custom_skill_selector_refreshes_and_verifies_whole_source(setup, monkeypatch, capsys):

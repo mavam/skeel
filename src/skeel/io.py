@@ -7,7 +7,6 @@ import shlex
 import shutil
 import stat
 import sys
-from collections import Counter
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -241,20 +240,7 @@ def display_directory(directory: Path) -> str:
 
 
 def target_label(target: SkillTarget) -> str:
-    return f"{target.agent or 'custom'}  {display_directory(target.directory)}"
-
-
-def target_names(targets: Sequence[SkillTarget]) -> dict[SkillTarget, str]:
-    """Use short agent names unless distinct directories make them ambiguous."""
-    counts = Counter(target.agent or "custom" for target in targets)
-    return {
-        target: (
-            target.agent or "custom"
-            if counts[target.agent or "custom"] == 1
-            else display_directory(target.directory)
-        )
-        for target in targets
-    }
+    return target.agent or f"custom  {display_directory(target.directory)}"
 
 
 def append_targets(text: Text, names: Sequence[str]) -> None:
@@ -615,19 +601,7 @@ class Terminal:
 
     def render_update_summary(self, results: Sequence[StepResult], *, verbose: bool) -> None:
         targets = list(dict.fromkeys(result.target for result in results if result.target))
-        names = target_names(targets) if len(targets) > 1 else {}
-        if names:
-            legend = []
-            for target, name in names.items():
-                directory = display_directory(target.directory)
-                legend.append(
-                    (
-                        Text(name, style=STYLE_TARGET),
-                        Text(directory if name != directory else "", style=STYLE_TARGET),
-                    )
-                )
-            print_columns(self.error_console, legend)
-            self.error_console.print()
+        names = {target: target_label(target) for target in targets}
 
         failed: list[StepResult] = []
         by_status: dict[str, list[StepResult]] = {
@@ -650,7 +624,7 @@ class Terminal:
         current = by_status["current"]
 
         rows = updated + (current if verbose else []) + skipped + failed
-        groups = collapse_update_rows(rows) if names else [[result] for result in rows]
+        groups = collapse_update_rows(rows) if len(targets) > 1 else [[result] for result in rows]
         rendered: list[tuple[Text, Text, Text, Text]] = []
         for group in groups:
             result = group[0]
@@ -690,9 +664,10 @@ class Terminal:
         counts = [Text(f"{count} {label}", style=style) for count, label, style in summary if count]
         if counts:
             text = Text(style=STYLE_DETAIL)
-            if names:
-                text.append(f"{len(results)} operations across {len(targets)} targets: ")
+            if len(targets) > 1:
+                text.append(f"{len(results)} operations: ")
             text.append_text(Text(", ", style=STYLE_DETAIL).join(counts))
+            append_targets(text, list(names.values()))
             self.error_console.print(text)
         warnings: dict[str, list[str]] = {}
         for result in results:

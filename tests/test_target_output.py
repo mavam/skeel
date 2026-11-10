@@ -14,7 +14,6 @@ from skeel.io import (
     append_targets,
     collapse_update_rows,
     target_label,
-    target_names,
 )
 from skeel.targets import SkillTarget
 
@@ -47,11 +46,11 @@ def test_identical_results_share_a_row_but_counts_remain_per_operation(targets, 
     Terminal().render_update_summary([updated(target) for target in targets], verbose=False)
     output = capsys.readouterr().err
     normalized = " ".join(output.split())
-    assert "universal ~/.agents/skills" in normalized
-    assert "claude-code ~/.claude/skills" in normalized
+    assert "~/" not in output
+    assert str(Path.home()) not in output
     assert normalized.count("↑ ⌂ rex custom installer universal, claude-code") == 1
     assert "2 updated" in output
-    assert "2 operations across 2 targets" in output
+    assert "2 operations: 2 updated  universal, claude-code" in output
     assert "[" not in output
     assert "]" not in output
 
@@ -64,7 +63,7 @@ def test_different_outcomes_stay_separate(targets, capsys, verbose):
     normalized = " ".join(output.split())
     assert "↑ ⌂ rex custom installer universal" in normalized
     assert ("= ⌂ rex custom installer claude-code" in normalized) == verbose
-    assert "universal, claude-code" not in output
+    assert "universal, claude-code" not in output.split("\n\n", 1)[0]
     assert "1 updated" in output
     assert "1 current" in output
 
@@ -101,10 +100,11 @@ def test_failures_remain_individual_even_with_the_same_diagnostic(targets, capsy
     assert "✘ ⌂ rex failed universal" in normalized
     assert "✘ ⌂ rex failed claude-code" in normalized
     assert "2 failed" in output
-    assert "universal, claude-code" not in output
+    assert "universal, claude-code" not in output.split("\n\n", 1)[0]
     terminal.failure_output(results[1])
     output = capsys.readouterr().err
-    assert "claude-code  ~/.claude/skills" in output
+    assert "  claude-code\n" in output
+    assert "skills" not in output
     assert "  failed" in output
 
 
@@ -116,18 +116,23 @@ def test_identical_warnings_are_deduplicated_without_losing_target_context(targe
     assert "could not prune  universal, claude-code" in output
 
 
-def test_target_names_fall_back_to_paths_when_agent_names_are_ambiguous(targets):
+def test_scope_distinguishes_the_same_agent_without_paths(targets, capsys):
     user = targets[1]
     project = replace(user, directory=Path(".claude/skills"), scope="project")
-    assert target_names([user, project]) == {
-        user: "~/.claude/skills",
-        project: ".claude/skills",
-    }
+    results = [updated(user), updated(project, scope="project")]
+    Terminal().render_update_summary(results, verbose=False)
+    output = capsys.readouterr().err
+    normalized = " ".join(output.split())
+    assert "↑ ⌂ rex custom installer claude-code" in normalized
+    assert "↑ ★ rex custom installer claude-code" in normalized
+    assert ".claude/skills" not in output
 
 
 def test_single_target_stays_compact(targets, capsys):
     Terminal().render_update_summary([updated(targets[0])], verbose=False)
-    assert capsys.readouterr().err == "↑ ⌂ rex  custom installer\n\n1 updated\n"
+    assert capsys.readouterr().err == (
+        "↑ ⌂ rex  custom installer  universal\n\n1 updated  universal\n"
+    )
 
 
 @pytest.mark.parametrize("width", [40, 60, 100])
@@ -139,7 +144,7 @@ def test_plain_output_keeps_targets_readable_at_narrow_widths(targets, capsys, m
     output = capsys.readouterr().err
     normalized = " ".join(output.split())
     assert "rex custom installer universal, claude-code" in normalized
-    assert "2 operations across 2 targets" in normalized
+    assert "2 operations: 2 updated universal, claude-code" in normalized
     assert "\x1b" not in output
     assert "[" not in output
 
@@ -172,7 +177,7 @@ def test_progress_includes_target_without_brackets(tmp_path):
     progress = Progress()
     task_id = progress.add_task("rex@*", scope="user", target=target, detail="custom installer")
     text = StepDescriptionColumn().render(progress.tasks[task_id])
-    assert text.plain == f"⌂ rex custom installer  claude-code  {tmp_path}/skills"
+    assert text.plain == "⌂ rex custom installer  claude-code"
 
 
 def test_custom_directory_is_explicit_in_json_and_display():
@@ -218,7 +223,7 @@ def test_pinned_rows_align_fields_and_use_a_single_summary_line(targets, capsys)
     assert len({row.index("pinned") for row in rows}) == 1
     assert len({row.index("universal") for row in rows}) == 1
     assert len({row.index(source) for row, source in zip(rows, skills.values(), strict=True)}) == 1
-    assert output.splitlines()[-1] == "7 operations across 2 targets: 1 current, 6 pinned"
+    assert output.splitlines()[-1] == "7 operations: 1 current, 6 pinned  universal, claude-code"
     assert "!" not in output
     assert "·" not in output
     assert "skipped" not in output
@@ -235,6 +240,17 @@ def test_pinned_presentation_does_not_hide_real_skips_or_change_json(targets, ca
     normalized = " ".join(output.split())
     assert "= ⌂ rex pinned universal" in normalized
     assert "! ⌂ rex missing GitHub metadata claude-code" in normalized
-    assert "2 operations across 2 targets: 1 pinned, 1 skipped" in output
+    assert "2 operations: 1 pinned, 1 skipped  universal, claude-code" in output
     assert results[0].json()["status"] == "skipped"
     assert results[0].json()["detail"] == "pinned"
+
+
+def test_apply_output_identifies_agent_without_a_directory(targets, capsys):
+    Terminal().render_step_result(updated(targets[1]))
+    assert capsys.readouterr().err == "↑ ⌂ rex custom installer  claude-code\n"
+
+
+def test_quiet_current_summary_identifies_agents_without_paths(targets, capsys):
+    results = [updated(target, status="current") for target in targets]
+    Terminal().render_update_summary(results, verbose=False)
+    assert capsys.readouterr().err == "2 operations: 2 current  universal, claude-code\n"
