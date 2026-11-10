@@ -916,7 +916,7 @@ async def command_apply(command: ApplyOptions) -> int:
             selector=selector,
             prune=command.prune,
         )
-        steps = scoped_steps(plan, inventory.scope)
+        steps = scoped_steps(plan, inventory.scope, target=inventory.runtime.target)
         context_results, context_exit_code = await run_apply_steps(
             command,
             inventory.runtime,
@@ -982,7 +982,7 @@ async def apply_steps(
         selector=selector,
         removals=removals,
     )
-    return scoped_steps(plan, scope)
+    return scoped_steps(plan, scope, target=runtime.target)
 
 
 def apply_selector(command: ApplyOptions) -> ApplySelector | None:
@@ -1206,7 +1206,7 @@ async def command_remove_all(command: RemoveOptions) -> int:
                 inventory.installed,
                 removals=remove_targets.get(selection_key(inventory.runtime), ()),
             )
-            steps = scoped_steps(plan, inventory.scope)
+            steps = scoped_steps(plan, inventory.scope, target=inventory.runtime.target)
             context_results, context_exit_code = await run_apply_steps(
                 command,
                 inventory.runtime,
@@ -1449,7 +1449,7 @@ async def command_update(command: UpdateOptions) -> int:
                     inventory.runtime.target,
                 )
             )
-        steps.extend(scoped_steps(plan, inventory.scope))
+        steps.extend(scoped_steps(plan, inventory.scope, target=inventory.runtime.target))
 
     if selector is not None and not steps:
         if not selector_matches_effective_manifest and shadowed.warnings:

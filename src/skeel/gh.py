@@ -87,6 +87,7 @@ class SkillStep:
     postprocess: StepPostprocessor | None = None
     preview_detail: str | None = None
     parallel: bool = True
+    target: SkillTarget | None = None
 
 
 @dataclass(frozen=True)
@@ -805,11 +806,18 @@ def matching_desired_install(
     return None
 
 
-def scoped_steps(steps: Sequence[SkillStep], scope: str | None) -> list[SkillStep]:
-    """Stamp every step from a manifest context with its scope for display."""
-    if scope is None:
-        return list(steps)
-    return [replace(step, scope=scope) for step in steps]
+def scoped_steps(
+    steps: Sequence[SkillStep], scope: str | None, *, target: SkillTarget | None = None
+) -> list[SkillStep]:
+    """Attach manifest scope and installation target to execution and display."""
+    return [
+        replace(
+            step,
+            scope="custom" if target is not None and target.scope == "custom" else scope,
+            target=target,
+        )
+        for step in steps
+    ]
 
 
 def update_steps(

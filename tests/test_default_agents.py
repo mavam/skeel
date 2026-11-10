@@ -59,6 +59,11 @@ def test_commands_use_default_agents(setup, monkeypatch, capsys, operation):
     payload = json.loads(capsys.readouterr().out)
     if operation in ("apply", "update"):
         assert len(payload["steps"]) == 2
+        assert [step["agent"] for step in payload["steps"]] == ["universal", "claude-code"]
+        assert [step["directory"] for step in payload["steps"]] == [
+            str(home / ".agents/skills"),
+            str(home / ".claude/skills"),
+        ]
 
 
 @pytest.mark.parametrize("selector", [["--agent", "universal"], ["--dir", "custom"]])
@@ -165,3 +170,88 @@ def test_remove_all_edits_each_manifest_once(setup, monkeypatch, capsys):
     assert calls == [path]
     assert load_manifest(path).agents == ("universal", "claude-code")
     assert load_manifest(path).sources == ()
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+@pytest.mark.parametrize("json_output", [False, True])
+def test_custom_update_uses_each_target(setup, monkeypatch, capsys, dry_run, json_output):
+    from skeel.io import ProcessResult
+
+    home, _, path = setup
+    path.write_text(
+        "agents: [universal, claude-code]\nsources:\n  rex:\n"
+        "    skills: [rex]\n    install: [[generate-rex]]\n"
+    )
+    calls = []
+
+    async def installed(target, runner):
+        skill = target.directory / "rex"
+        skill.mkdir(parents=True, exist_ok=True)
+        (skill / "SKILL.md").write_text("---\nname: rex\n---\n# Rex\n")
+        return (InstalledSkill(name="rex", path=skill),)
+
+    async def run(self, command, *, capture_output, env):
+        assert command == ["generate-rex"]
+        calls.append((env["SKEEL_AGENT"], env["SKEEL_SKILLS_DIR"]))
+        return ProcessResult(command=command, returncode=0)
+
+    monkeypatch.setattr("skeel.cli.installed_skills", installed)
+    monkeypatch.setattr("skeel.gh.ProcessRunner.run", run)
+    args = ["-g", "update", "rex", "-v"]
+    if dry_run:
+        args.append("--dry-run")
+    if json_output:
+        args.append("--json")
+    assert main(args) == 0
+    expected = [
+        ("universal", str(home / ".agents/skills")),
+        ("claude-code", str(home / ".claude/skills")),
+    ]
+    assert calls == ([] if dry_run else expected)
+    captured = capsys.readouterr()
+    if json_output:
+        assert captured.err == ""
+        payload = json.loads(captured.out)
+        assert [(step["agent"], step["directory"]) for step in payload["steps"]] == expected
+        assert all(step["label"] == "rex@*" for step in payload["steps"])
+        if not dry_run:
+            assert all(step["status"] == "current" for step in payload["steps"])
+    else:
+        output = " ".join((captured.out if dry_run else captured.err).split())
+        assert "missing GitHub metadata" not in output
+        assert "universal ~/.agents/skills" in output
+        assert "claude-code ~/.claude/skills" in output
+        if not dry_run:
+            assert output.count("= ⌂ rex custom installer") == 1
+            assert "universal, claude-code" in output
+            assert "2 current" in output
+            assert "2 operations across 2 targets" in output
+
+
+def test_custom_skill_selector_refreshes_and_verifies_whole_source(setup, monkeypatch, capsys):
+    from skeel.io import ProcessResult
+
+    home, _, path = setup
+    path.write_text(
+        "sources:\n  local:\n    skills:\n      - alpha\n      - name: beta\n"
+        "        frontmatter: {description: Managed}\n    install: [[generate]]\n"
+    )
+    target = home / ".agents/skills"
+    for name in ("alpha", "beta"):
+        (target / name).mkdir(parents=True)
+        (target / name / "SKILL.md").write_text(f"---\nname: {name}\n---\n# Original\n")
+
+    async def installed(options, runner):
+        return tuple(InstalledSkill(name=name, path=target / name) for name in ("alpha", "beta"))
+
+    async def run(self, command, **kwargs):
+        assert command == ["generate"]
+        return ProcessResult(command=command, returncode=0)
+
+    monkeypatch.setattr("skeel.cli.installed_skills", installed)
+    monkeypatch.setattr("skeel.gh.ProcessRunner.run", run)
+    assert main(["-g", "update", "local", "alpha", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert len(payload["steps"]) == 1
+    assert payload["steps"][0]["status"] == "updated"
+    assert "description: Managed" in (target / "beta/SKILL.md").read_text()

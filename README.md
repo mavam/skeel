@@ -183,7 +183,28 @@ and `update` when using the implicit manifests.
 Human output is consistent across commands: the first column is the action
 marker, the second column is a muted scope glyph (`★` for project, `⌂` for
 user), followed by the skill name, the source, and a muted suffix for versions,
-paths, or diagnostic details.
+paths, or diagnostic details. Skill names use bold text, sources use cyan, and
+targets use muted text without brackets. Update rows align skill, source, status,
+and targets in separate columns, stacking secondary fields on narrow terminals.
+Current and pinned results use a neutral `=` marker instead of a warning.
+Execution progress and apply results identify the agent and target directory.
+
+Multi-target updates collapse identical results into one row with a trailing
+list of targets. Different outcomes and failures stay separate. A compact legend
+maps target names to directories; ambiguous agent names use directory paths
+instead. Counts still include every operation in every target, not just the
+visible rows or the number of skills a source installs. A single summary line
+separates intentional pinned skips from other skipped updates. JSON keeps one
+execution step per operation, including `directory` and, for known agents, `agent`.
+
+```text
+universal    ~/.agents/skills
+claude-code  ~/.claude/skills
+
+↑ ⌂ rex  custom installer  universal, claude-code
+
+2 operations across 2 targets: 2 updated
+```
 
 For scripts, pass `--json` to `add`, `apply`, `diff`, `list`, `path`, `remove`,
 or `update` to emit one machine-readable object on stdout.

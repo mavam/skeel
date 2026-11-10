@@ -1879,8 +1879,8 @@ def test_run_steps_can_remove_completed_current_progress_tasks(tmp_path: Path) -
         def __exit__(self, exc_type, exc_value, traceback) -> None:
             pass
 
-        def add_task(self, description, *, total, scope=""):
-            del total
+        def add_task(self, description, *, total, scope="", target=None):
+            del total, target
             task_id = self.next_task
             self.next_task += 1
             self.descriptions[task_id] = description
@@ -2166,10 +2166,9 @@ def test_update_summary_renders_changed_rows_and_tally(tmp_path, capsys, monkeyp
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err.splitlines() == [
-        "↑ ⌂ tenzir-ship tenzir/skills main@9f3e1a2 → main@12c7aa3",
+        "↑ ⌂ tenzir-ship  tenzir/skills  main@9f3e1a2 → main@12c7aa3",
         "",
-        "1 updated",
-        "27 current",
+        "1 updated, 27 current",
     ]
     assert all(not line.startswith(" ") for line in captured.err.splitlines() if line)
 
@@ -2235,10 +2234,10 @@ def test_update_verbose_lists_current_rows(tmp_path, capsys, monkeypatch) -> Non
 
     assert main(["--manifest", str(path), "--scope", "user", "update", "-v"]) == 0
 
-    err = capsys.readouterr().err
+    err = " ".join(capsys.readouterr().err.split())
     assert "↑ ⌂ tenzir-ship tenzir/skills main@9f3e1a2 → main@12c7aa3" in err
-    assert "· ⌂ clacks downstairs-dawgs/clacks" in err
-    assert "· ⌂ gog openclaw/gogcli" in err
+    assert "= ⌂ clacks downstairs-dawgs/clacks" in err
+    assert "= ⌂ gog openclaw/gogcli" in err
     assert "1 updated" in err
     assert "2 current" in err
 
@@ -2279,15 +2278,16 @@ def test_update_summary_counts_skips_and_failures(tmp_path, capsys, monkeypatch)
 
     assert main(["--manifest", str(path), "--scope", "user", "update"]) == 7
 
-    err = capsys.readouterr().err
+    captured = capsys.readouterr().err
+    err = " ".join(captured.split())
     assert "↑ ⌂ tenzir-ship tenzir/skills main@9f3e1a2 → main@12c7aa3" in err
-    assert "! ⌂ caveman mattpocock/skills pinned" in err
+    assert "= ⌂ caveman mattpocock/skills pinned" in err
     assert "1 updated" in err
-    assert "1 skipped" in err
+    assert "1 pinned" in err
     assert "1 failed" in err
     assert "1 current" in err
     assert "failed to update skills: openclaw/openclaw@openhue" in err
-    assert "  gh failed" in err
+    assert "  gh failed" in captured
 
 
 def test_update_deduplicates_project_and_user_scope_at_home(tmp_path, capsys, monkeypatch) -> None:
