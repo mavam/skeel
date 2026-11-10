@@ -278,9 +278,16 @@ pin such as `main`. This refresh also installs skills added to the upstream
 source since the previous update.
 
 Pass a source, or a source and skill, to update only that manifest selection. A
-source-and-skill selector stays targeted to that skill, even when the manifest
-entry normally installs all skills. A selector that does not match the manifest
-exits with an error.
+source-and-skill selector stays targeted to that skill for GitHub sources, even
+when the manifest entry normally installs all skills. A selector that does not
+match the manifest exits with an error.
+
+For a source with custom `install` commands, `update` reruns those commands once
+per target, in order, using the same `SKEEL_*` environment as `apply`. Custom
+sources don't need GitHub metadata. Selecting one of their skills refreshes the
+whole source because the installer controls all its outputs. A failed command
+stops that source's command sequence; other sources and targets can still update.
+Unchanged file contents and permissions report `current` rather than `updated`.
 
 ```sh
 uvx skeel update

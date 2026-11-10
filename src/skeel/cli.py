@@ -1419,6 +1419,16 @@ async def command_update(command: UpdateOptions) -> int:
                 continue
             selector_matches_effective_manifest = True
         manifest = filter_manifest(inventory.manifest, selector)
+        # A custom command cannot update only one of its outputs. Keep the full
+        # source so verification and frontmatter overrides cover every output.
+        full_sources = {source.source: source for source in inventory.manifest.sources}
+        manifest = replace(
+            manifest,
+            sources=tuple(
+                full_sources[source.source] if source.install else source
+                for source in manifest.sources
+            ),
+        )
         installed = update_installed_skills(
             inventory.manifest,
             inventory.installed,
